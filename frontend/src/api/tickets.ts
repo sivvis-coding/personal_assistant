@@ -1,0 +1,69 @@
+import { apiRequest } from './client';
+import type { DraftReplyWorkflowResponse, SummaryWorkflowResponse, UserStory } from '../types/ai';
+import type { CreateClickUpTaskWorkflowResponse, PrepareClickUpTaskWorkflowResponse } from '../types/clickup';
+import type { TicketDetailResponse, TicketListResponse } from '../types/ticket';
+
+export type TicketListScope = 'mine' | 'all';
+
+/**
+ * Purpose: Load tickets from backend.
+ * Parameters: scope controls whether assigned tickets or all tickets are loaded.
+ * Return value: Promise with ticket list response.
+ * Edge cases: Backend may return mock tickets when Fresh credentials are absent.
+ */
+export function listTickets(scope: TicketListScope = 'mine'): Promise<TicketListResponse> {
+  return apiRequest<TicketListResponse>(`/tickets?scope=${encodeURIComponent(scope)}`);
+}
+
+/**
+ * Purpose: Load one ticket detail from backend.
+ * Parameters: ticketId identifies the Fresh ticket.
+ * Return value: Promise with ticket detail response.
+ * Edge cases: Backend may return cached or mock ticket data.
+ */
+export function getTicket(ticketId: string): Promise<TicketDetailResponse> {
+  return apiRequest<TicketDetailResponse>(`/tickets/${ticketId}`);
+}
+
+/**
+ * Purpose: Trigger summary workflow for a ticket.
+ * Parameters: ticketId identifies the Fresh ticket.
+ * Return value: Promise with persisted summary result.
+ * Edge cases: OpenAI mock output is used when API key is absent.
+ */
+export function summarizeTicket(ticketId: string): Promise<SummaryWorkflowResponse> {
+  return apiRequest<SummaryWorkflowResponse>(`/tickets/${ticketId}/summarize`, { method: 'POST' });
+}
+
+/**
+ * Purpose: Trigger reply draft workflow for a ticket.
+ * Parameters: ticketId identifies the Fresh ticket.
+ * Return value: Promise with persisted draft reply result.
+ * Edge cases: Reply is generated but never sent automatically.
+ */
+export function draftTicketReply(ticketId: string): Promise<DraftReplyWorkflowResponse> {
+  return apiRequest<DraftReplyWorkflowResponse>(`/tickets/${ticketId}/draft-reply`, { method: 'POST' });
+}
+
+/**
+ * Purpose: Trigger ClickUp task review preparation workflow.
+ * Parameters: ticketId identifies the Fresh ticket.
+ * Return value: Promise with generated user story and draft ID.
+ * Edge cases: This call never creates a real ClickUp task.
+ */
+export function prepareClickUpTask(ticketId: string): Promise<PrepareClickUpTaskWorkflowResponse> {
+  return apiRequest<PrepareClickUpTaskWorkflowResponse>(`/tickets/${ticketId}/prepare-clickup-task`, { method: 'POST' });
+}
+
+/**
+ * Purpose: Approve and create a ClickUp task from a reviewed user story.
+ * Parameters: ticketId identifies the Fresh ticket, userStory is the approved content.
+ * Return value: Promise with task creation result.
+ * Edge cases: Backend returns existing task link when one already exists.
+ */
+export function approveClickUpTask(ticketId: string, userStory: UserStory): Promise<CreateClickUpTaskWorkflowResponse> {
+  return apiRequest<CreateClickUpTaskWorkflowResponse>(`/tickets/${ticketId}/approve-clickup-task`, {
+    method: 'POST',
+    body: JSON.stringify({ user_story: userStory }),
+  });
+}
