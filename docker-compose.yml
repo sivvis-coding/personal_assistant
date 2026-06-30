@@ -35,7 +35,8 @@ services:
       context: ./frontend
     container_name: local-assistant-frontend
     environment:
-      VITE_API_BASE_URL: http://localhost:8000
+      VITE_API_BASE_URL: /api
+      VITE_BACKEND_URL: http://backend:8000
     ports:
       - "5173:5173"
     depends_on:

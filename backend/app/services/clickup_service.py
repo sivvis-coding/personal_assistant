@@ -1,5 +1,5 @@
 from app.integrations.clickup import ClickUpClient
-from app.schemas.clickup import WeekTimeResponse
+from app.schemas.clickup import ClickUpTask, WeekTimeResponse
 
 
 class ClickUpService:
@@ -17,6 +17,20 @@ class ClickUpService:
 
     def __init__(self, clickup_client: ClickUpClient) -> None:
         self._clickup_client = clickup_client
+
+    async def list_tasks(self) -> list[ClickUpTask]:
+        """Return tasks from the configured ClickUp list.
+
+        Parameters:
+            None.
+
+        Returns:
+            ClickUp task list.
+
+        Edge cases:
+            External errors are handled by the API layer.
+        """
+        return await self._clickup_client.list_tasks()
 
     async def get_week_time_entries(self) -> WeekTimeResponse:
         """Return current week time entries.

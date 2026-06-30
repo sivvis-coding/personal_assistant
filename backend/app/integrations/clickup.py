@@ -14,7 +14,7 @@ from app.integrations.clickup_contract import (
     CLICKUP_USER_STORY_CUSTOM_ITEM_ID,
 )
 from app.schemas.ai import UserStory
-from app.schemas.clickup import ClickUpTaskResult, TimeEntry, WeekTimeResponse
+from app.schemas.clickup import ClickUpTask, ClickUpTaskResult, TimeEntry, WeekTimeResponse
 from app.schemas.ticket import Ticket
 
 
@@ -91,6 +91,43 @@ class ClickUpClient:
                 {"id": CLICKUP_CUSTOM_FIELD_FUNCTIONAL_DESCRIPTION_ID, "value": user_story.functional_description},
             ],
         }
+
+    async def list_tasks(self) -> list[ClickUpTask]:
+        """Return tasks from the configured ClickUp list.
+
+        Parameters:
+            None.
+
+        Returns:
+            List of ClickUp tasks.
+
+        Edge cases:
+            Missing credentials return mock tasks.
+        """
+        if not self._settings.has_clickup_credentials:
+            return [
+                ClickUpTask(id="mock-1", name="Mock pending task", status="open"),
+                ClickUpTask(id="mock-2", name="Mock in-progress task", status="in progress"),
+                ClickUpTask(id="mock-3", name="Mock blocked task", status="blocked"),
+            ]
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                response = await client.get(
+                    f"https://api.clickup.com/api/v2/list/{self._settings.clickup_list_id}/task",
+                    headers={"Authorization": self._settings.clickup_api_key},
+                )
+                response.raise_for_status()
+                return [
+                    ClickUpTask(
+                        id=str(task.get("id")),
+                        name=str(task.get("name") or "Untitled"),
+                        status=str(task.get("status", {}).get("status") or "unknown").lower(),
+                        url=task.get("url"),
+                    )
+                    for task in response.json().get("tasks", [])
+                ]
+        except httpx.HTTPError as error:
+            raise ExternalServiceError(f"ClickUp list tasks failed: {error}") from error
 
     async def get_week_time_entries(self) -> WeekTimeResponse:
         """Return time entries for the current week.

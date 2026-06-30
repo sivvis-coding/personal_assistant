@@ -1,7 +1,7 @@
 import { apiRequest } from './client';
 import type { DraftReplyWorkflowResponse, SummaryWorkflowResponse, UserStory } from '../types/ai';
 import type { CreateClickUpTaskWorkflowResponse, PrepareClickUpTaskWorkflowResponse } from '../types/clickup';
-import type { TicketDetailResponse, TicketListResponse } from '../types/ticket';
+import type { TicketConversationsResponse, TicketDetailResponse, TicketListResponse } from '../types/ticket';
 
 export type TicketListScope = 'mine' | 'all';
 
@@ -11,8 +11,16 @@ export type TicketListScope = 'mine' | 'all';
  * Return value: Promise with ticket list response.
  * Edge cases: Backend may return mock tickets when Fresh credentials are absent.
  */
-export function listTickets(scope: TicketListScope = 'mine'): Promise<TicketListResponse> {
-  return apiRequest<TicketListResponse>(`/tickets?scope=${encodeURIComponent(scope)}`);
+export interface ListTicketsOptions {
+  scope?: TicketListScope;
+  includeClosed?: boolean;
+}
+
+export function listTickets(options: ListTicketsOptions = {}): Promise<TicketListResponse> {
+  const params = new URLSearchParams();
+  params.set('scope', options.scope ?? 'mine');
+  params.set('include_closed', String(options.includeClosed ?? false));
+  return apiRequest<TicketListResponse>(`/tickets?${params.toString()}`);
 }
 
 /**
@@ -53,6 +61,16 @@ export function draftTicketReply(ticketId: string): Promise<DraftReplyWorkflowRe
  */
 export function prepareClickUpTask(ticketId: string): Promise<PrepareClickUpTaskWorkflowResponse> {
   return apiRequest<PrepareClickUpTaskWorkflowResponse>(`/tickets/${ticketId}/prepare-clickup-task`, { method: 'POST' });
+}
+
+/**
+ * Purpose: Load conversation thread for a ticket.
+ * Parameters: ticketId identifies the Fresh ticket.
+ * Return value: Promise with ticket conversations response.
+ * Edge cases: Returns error=true with empty items when Fresh fails.
+ */
+export function getTicketConversations(ticketId: string): Promise<TicketConversationsResponse> {
+  return apiRequest<TicketConversationsResponse>(`/tickets/${ticketId}/conversations`);
 }
 
 /**

@@ -105,6 +105,38 @@ nav, .actions {
   grid-column: 1 / -1;
 }
 
+.assistant-page {
+  display: grid;
+  gap: 1rem;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(320px, 1fr) minmax(280px, 420px);
+}
+
+.assistant-chat {
+  display: grid;
+  gap: 1rem;
+}
+
+.assistant-responses {
+  display: grid;
+  gap: 1rem;
+}
+
+.assistant-response, .assistant-action-card {
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 10px;
+  padding: 1rem;
+}
+
+.assistant-actions-panel {
+  align-self: start;
+}
+
+.assistant-action-card {
+  margin-bottom: 1rem;
+}
+
 table {
   border-collapse: collapse;
   width: 100%;
@@ -157,8 +189,182 @@ pre {
   white-space: pre-wrap;
 }
 
+/* Chat interface */
+.chat-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  max-height: 60vh;
+  min-height: 300px;
+  overflow-y: auto;
+  padding: 0.5rem;
+}
+
+.chat-empty {
+  color: #9ca3af;
+  font-style: italic;
+  text-align: center;
+}
+
+.chat-message {
+  display: flex;
+  flex-direction: column;
+  max-width: 85%;
+}
+
+.chat-message.user {
+  align-self: flex-end;
+}
+
+.chat-message.assistant {
+  align-self: flex-start;
+}
+
+.chat-bubble {
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 12px;
+  padding: 0.75rem 1rem;
+}
+
+.chat-message.user .chat-bubble {
+  background: #1e3a8a;
+  border-color: #3b82f6;
+}
+
+.chat-text {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.chat-time {
+  color: #9ca3af;
+  font-size: 0.75rem;
+  margin-top: 0.25rem;
+}
+
+.chat-input-bar {
+  align-items: center;
+  display: flex;
+  gap: 0.75rem;
+}
+
+.chat-input {
+  flex: 1;
+}
+
+.typing-indicator {
+  color: #9ca3af;
+  font-style: italic;
+}
+
+.chat-actions {
+  border-top: 1px solid #334155;
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+}
+
+.chat-actions-title {
+  color: #fbbf24;
+  font-size: 0.875rem;
+  font-weight: 700;
+  margin: 0 0 0.5rem;
+}
+
+/* Action cards */
+.assistant-action-card {
+  margin-bottom: 1rem;
+}
+
+.assistant-action-card h3 {
+  margin-top: 0;
+}
+
+.action-badge {
+  border-radius: 999px;
+  display: inline-block;
+  font-size: 0.875rem;
+  font-weight: 700;
+  margin-top: 0.5rem;
+  padding: 0.25rem 0.75rem;
+}
+
+.action-badge.completed {
+  background: #14532d;
+  color: #bbf7d0;
+}
+
+.action-badge.rejected {
+  background: #7f1d1d;
+  color: #fecaca;
+}
+
+.time-entry-preview {
+  display: grid;
+  gap: 0.25rem;
+  grid-template-columns: auto 1fr;
+  margin: 0.5rem 0;
+}
+
+.time-entry-preview dt {
+  color: #9ca3af;
+  font-size: 0.875rem;
+  font-weight: 700;
+}
+
+.time-entry-preview dd {
+  margin: 0;
+}
+
+.action-result {
+  background: #0f172a;
+  border-radius: 8px;
+  margin-top: 0.5rem;
+  padding: 0.75rem;
+}
+
+.action-result.error {
+  background: #450a0a;
+  border: 1px solid #ef4444;
+  color: #fecaca;
+}
+
+.action-result.error pre {
+  color: #fecaca;
+  margin: 0.5rem 0 0;
+}
+
+.client-clarification {
+  background: #1e3a8a;
+  border: 1px solid #3b82f6;
+  border-radius: 12px;
+  margin-bottom: 0.75rem;
+  padding: 0.75rem 1rem;
+}
+
+.clarification-title {
+  color: #fbbf24;
+  font-weight: 700;
+  margin: 0 0 0.5rem;
+}
+
+.candidate-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.candidate-buttons button {
+  background: #0f172a;
+  border: 1px solid #60a5fa;
+}
+
+.candidate-buttons button:hover {
+  background: #1e40af;
+}
+
 @media (max-width: 900px) {
-  header, .layout {
+  header, .layout, .assistant-page {
     display: grid;
     grid-template-columns: 1fr;
   }

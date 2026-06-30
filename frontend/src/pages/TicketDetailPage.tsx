@@ -1,100 +1,268 @@
 import { useEffect, useState } from 'react';
-import { approveClickUpTask, draftTicketReply, getTicket, prepareClickUpTask, summarizeTicket } from '../api/tickets';
-import { ClickUpTaskResult } from '../components/ClickUpTaskResult';
-import { DraftEditor } from '../components/DraftEditor';
-import { ErrorState } from '../components/ErrorState';
-import { LoadingState } from '../components/LoadingState';
-import { SummaryBlock } from '../components/SummaryBlock';
-import { TicketDetail } from '../components/TicketDetail';
-import { UserStoryReview } from '../components/UserStoryReview';
-import type { ReplyDraft, TicketSummary, UserStory } from '../types/ai';
-import type { CreateClickUpTaskWorkflowResponse } from '../types/clickup';
-import type { Ticket } from '../types/ticket';
-import type { WorkflowState } from '../types/workflow';
-
-interface TicketDetailPageProps {
-  ticketId: string | null;
-}
+import { useParams, useNavigate } from 'react-router-dom';
+import {
+  Alert,
+  Box,
+  Button,
+  Chip,
+  CircularProgress,
+  Divider,
+  Paper,
+  Typography,
+} from '@mui/material';
+import ArrowBackIcon from '@mui/icons-material/ArrowBack';
+import OpenInNewIcon from '@mui/icons-material/OpenInNew';
+import { getTicket, getTicketConversations } from '../api/tickets';
+import type { Ticket, TicketConversation, TicketConversationsResponse } from '../types/ticket';
 
 /**
- * Render ticket detail workflow page.
+ * Render ticket detail page with description and conversation thread.
  *
  * Parameters:
- *   ticketId: Selected ticket ID.
+ *   None.
  *
  * Returns:
  *   JSX detail page.
  *
  * Edge cases:
- *   Null ticket ID renders a selection prompt.
+ *   Invalid ticket IDs render a not found message.
+ *   Conversation errors show a warning but do not block the ticket detail.
  */
-export function TicketDetailPage({ ticketId }: TicketDetailPageProps) {
+export function TicketDetailPage() {
+  const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [ticket, setTicket] = useState<Ticket | null>(null);
   const [source, setSource] = useState('');
-  const [summary, setSummary] = useState<TicketSummary | null>(null);
-  const [draft, setDraft] = useState<ReplyDraft | null>(null);
-  const [reviewUserStory, setReviewUserStory] = useState<UserStory | null>(null);
-  const [clickUpResult, setClickUpResult] = useState<CreateClickUpTaskWorkflowResponse | null>(null);
-  const [state, setState] = useState<WorkflowState>('idle');
+  const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const [conversations, setConversations] = useState<TicketConversation[]>([]);
+  const [convsSource, setConvsSource] = useState('');
+  const [convsLoading, setConvsLoading] = useState(true);
+  const [convsError, setConvsError] = useState(false);
+
   useEffect(() => {
-    if (!ticketId) return;
-    setState('loading');
+    if (!id) {
+      setIsLoading(false);
+      setConvsLoading(false);
+      return;
+    }
+    setIsLoading(true);
     setError(null);
-    getTicket(ticketId)
+    getTicket(id)
       .then((response) => {
         setTicket(response.ticket);
         setSource(response.source);
-        setState('success');
       })
-      .catch((caught: Error) => {
-        setError(caught.message);
-        setState('error');
-      });
-  }, [ticketId]);
+      .catch((caught: Error) => setError(caught.message))
+      .finally(() => setIsLoading(false));
 
-  if (!ticketId) return <p>Select a ticket to see details.</p>;
-  if (state === 'loading') return <LoadingState message="Loading ticket..." />;
-  if (error) return <ErrorState message={error} />;
-  if (!ticket) return <p>No ticket loaded.</p>;
+    setConvsLoading(true);
+    setConvsError(false);
+    getTicketConversations(id)
+      .then((response: TicketConversationsResponse) => {
+        setConversations(response.items);
+        setConvsSource(response.source);
+        setConvsError(response.error);
+      })
+      .catch(() => {
+        setConversations([]);
+        setConvsError(true);
+      })
+      .finally(() => setConvsLoading(false));
+  }, [id]);
 
-  /**
-   * Purpose: Prepare a ClickUp task proposal without creating external state.
-   * Parameters: None.
-   * Return value: None.
-   * Edge cases: Existing ClickUp tasks are not checked until approval step.
-   */
-  function handlePrepareClickUpTask(): void {
-    prepareClickUpTask(ticket.id).then((response) => {
-      setReviewUserStory(response.user_story);
-      setClickUpResult(null);
-    }).catch((caught: Error) => setError(caught.message));
+  if (!id) {
+    return (
+      <Box>
+        <Typography variant="h4" gutterBottom>
+          Ticket no seleccionado
+        </Typography>
+        <Button startIcon={<ArrowBackIcon />} onClick={() => navigate('/tickets')}>
+          Volver al listado
+        </Button>
+      </Box>
+    );
   }
 
-  /**
-   * Purpose: Approve reviewed user story and create ClickUp task.
-   * Parameters: None.
-   * Return value: None.
-   * Edge cases: Approval is ignored when no user story is loaded.
-   */
-  function handleApproveClickUpTask(): void {
-    if (!reviewUserStory) return;
-    approveClickUpTask(ticket.id, reviewUserStory).then(setClickUpResult).catch((caught: Error) => setError(caught.message));
+  if (isLoading) {
+    return (
+      <Box sx={{ display: 'flex', justifyContent: 'center', mt: 8 }}>
+        <CircularProgress />
+      </Box>
+    );
+  }
+
+  if (error) {
+    return (
+      <Box>
+        <Typography color="error" variant="h6">
+          {error}
+        </Typography>
+        <Button startIcon={<ArrowBackIcon />} onClick={() => navigate('/tickets')} sx={{ mt: 2 }}>
+          Volver
+        </Button>
+      </Box>
+    );
+  }
+
+  if (!ticket) {
+    return (
+      <Box>
+        <Typography variant="h6">No se pudo cargar el ticket.</Typography>
+      </Box>
+    );
   }
 
   return (
-    <section>
-      <TicketDetail ticket={ticket} source={source} />
-      <div className="actions">
-        <button type="button" onClick={() => summarizeTicket(ticket.id).then((response) => setSummary(response.summary))}>Resumir</button>
-        <button type="button" onClick={() => draftTicketReply(ticket.id).then((response) => setDraft(response.draft))}>Generar respuesta</button>
-        <button type="button" onClick={handlePrepareClickUpTask}>Preparar tarea ClickUp</button>
-      </div>
-      <SummaryBlock summary={summary} />
-      <DraftEditor draft={draft} onChange={setDraft} />
-      <UserStoryReview userStory={reviewUserStory} onChange={setReviewUserStory} onApprove={handleApproveClickUpTask} />
-      <ClickUpTaskResult result={clickUpResult} />
-    </section>
+    <Box>
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
+        <Typography variant="h4">Ticket {ticket.id}</Typography>
+        <Box sx={{ display: 'flex', gap: 1 }}>
+          {ticket.url ? (
+            <Button
+              variant="outlined"
+              startIcon={<OpenInNewIcon />}
+              href={ticket.url}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Abrir en Freshservice
+            </Button>
+          ) : null}
+          <Button startIcon={<ArrowBackIcon />} onClick={() => navigate('/tickets')}>
+            Volver
+          </Button>
+        </Box>
+      </Box>
+
+      <Paper sx={{ p: 3 }}>
+        <Typography variant="h5" gutterBottom>
+          {ticket.subject}
+        </Typography>
+        <Typography variant="body1" color="text.secondary" gutterBottom>
+          Estado: {ticket.status} · Prioridad: {ticket.priority} · Fuente: {source}
+        </Typography>
+        <Typography variant="body1" sx={{ mt: 2, whiteSpace: 'pre-wrap' }}>
+          {ticket.description || 'Sin descripción.'}
+        </Typography>
+      </Paper>
+
+      <Box sx={{ mt: 4 }}>
+        <Typography variant="h6" gutterBottom>
+          Conversación
+        </Typography>
+
+        {convsLoading ? (
+          <Box sx={{ display: 'flex', justifyContent: 'center', mt: 4 }}>
+            <CircularProgress size={28} />
+          </Box>
+        ) : null}
+
+        {!convsLoading && convsError ? (
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            No se pudo cargar el historial de conversación desde Freshservice.
+          </Alert>
+        ) : null}
+
+        {!convsLoading && !convsError && conversations.length === 0 ? (
+          <Typography color="text.secondary">Sin entradas de conversación.</Typography>
+        ) : null}
+
+        {!convsLoading
+          ? conversations.map((entry, index) => (
+              <ConversationEntry key={entry.id || index} entry={entry} />
+            ))
+          : null}
+
+        {!convsLoading && convsSource ? (
+          <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+            Fuente: {convsSource}
+          </Typography>
+        ) : null}
+      </Box>
+    </Box>
+  );
+}
+
+interface ConversationEntryProps {
+  entry: TicketConversation;
+}
+
+/**
+ * Render a single conversation entry with kind-based visual distinction.
+ *
+ * Parameters:
+ *   entry: Conversation entry to render.
+ *
+ * Returns:
+ *   JSX conversation entry.
+ *
+ * Edge cases:
+ *   body_text is rendered as plain text — dangerouslySetInnerHTML is never used.
+ *   private_note entries use a muted background and display a "Nota interna" badge.
+ *   agent_reply entries are right-aligned.
+ *   customer_reply entries are left-aligned.
+ */
+function ConversationEntry({ entry }: ConversationEntryProps) {
+  const isPrivateNote = entry.kind === 'private_note';
+  const isAgentReply = entry.kind === 'agent_reply';
+
+  const alignSelf = isAgentReply ? 'flex-end' : 'flex-start';
+  const maxWidth = '75%';
+
+  const backgroundColor = isPrivateNote
+    ? 'action.hover'
+    : isAgentReply
+    ? 'primary.light'
+    : 'background.paper';
+
+  const kindLabel: Record<string, string> = {
+    customer_reply: 'Cliente',
+    agent_reply: 'Agente',
+    private_note: 'Nota interna',
+  };
+
+  const kindColor: Record<string, 'default' | 'primary' | 'warning'> = {
+    customer_reply: 'default',
+    agent_reply: 'primary',
+    private_note: 'warning',
+  };
+
+  return (
+    <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: alignSelf, mb: 2, maxWidth }}>
+      <Paper
+        variant="outlined"
+        sx={{
+          p: 2,
+          width: '100%',
+          bgcolor: backgroundColor,
+          borderStyle: isPrivateNote ? 'dashed' : 'solid',
+        }}
+      >
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1, flexWrap: 'wrap' }}>
+          <Chip
+            label={kindLabel[entry.kind]}
+            color={kindColor[entry.kind]}
+            size="small"
+            variant={isPrivateNote ? 'outlined' : 'filled'}
+          />
+          {entry.from_email ? (
+            <Typography variant="caption" color="text.secondary">
+              {entry.from_email}
+            </Typography>
+          ) : null}
+          {entry.created_at ? (
+            <Typography variant="caption" color="text.secondary" sx={{ ml: 'auto' }}>
+              {new Date(entry.created_at).toLocaleString()}
+            </Typography>
+          ) : null}
+        </Box>
+        <Divider sx={{ mb: 1 }} />
+        <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
+          {entry.body_text || '(sin contenido)'}
+        </Typography>
+      </Paper>
+    </Box>
   );
 }

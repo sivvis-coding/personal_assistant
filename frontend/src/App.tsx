@@ -1,68 +1,44 @@
-import { useState } from 'react';
-import { TicketDetailPage } from './pages/TicketDetailPage';
+import { BrowserRouter, Route, Routes } from 'react-router-dom';
+import { ThemeProvider } from '@mui/material/styles';
+import CssBaseline from '@mui/material/CssBaseline';
+import { appTheme } from './theme/theme';
+import { AppShell } from './components/layout/AppShell';
+import { DashboardPage } from './pages/DashboardPage';
+import { ChatPage } from './pages/ChatPage';
+import { ConversationHistoryPage } from './pages/ConversationHistoryPage';
+import { ConversationDetailPage } from './pages/ConversationDetailPage';
+import { ActionsPage } from './pages/ActionsPage';
 import { TicketsPage } from './pages/TicketsPage';
-import { WeekTimePage } from './pages/WeekTimePage';
-import { WorkflowRunsPage } from './pages/WorkflowRunsPage';
-import './styles.css';
-
-type Page = 'tickets' | 'week-time' | 'workflow-runs';
+import { TicketDetailPage } from './pages/TicketDetailPage';
+import { SettingsPage } from './pages/SettingsPage';
 
 /**
- * Render root SPA shell.
+ * Render root application with routing and MUI theme.
  *
  * Parameters:
  *   None.
  *
  * Returns:
- *   JSX application shell.
- *
- * Edge cases:
- *   API key is stored only in localStorage for local development convenience.
+ *   JSX application root.
  */
 export function App() {
-  const [page, setPage] = useState<Page>('tickets');
-  const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
-  const [localKey, setLocalKey] = useState(window.localStorage.getItem('LOCAL_APP_API_KEY') ?? '');
-
-  /**
-   * Purpose: Persist local API key for backend requests.
-   * Parameters: value is the key entered by the user.
-   * Return value: None.
-   * Edge cases: Empty value disables sending the header from the frontend.
-   */
-  function saveLocalKey(value: string): void {
-    window.localStorage.setItem('LOCAL_APP_API_KEY', value);
-    setLocalKey(value);
-  }
-
   return (
-    <main className="app-shell">
-      <header>
-        <h1>Local Assistant</h1>
-        <nav>
-          <button type="button" onClick={() => setPage('tickets')}>Tickets</button>
-          <button type="button" onClick={() => setPage('week-time')}>Horas semana</button>
-          <button type="button" onClick={() => setPage('workflow-runs')}>Historial workflows</button>
-        </nav>
-        <label className="api-key">
-          Local API key
-          <input value={localKey} onChange={(event) => saveLocalKey(event.target.value)} placeholder="Optional" />
-        </label>
-      </header>
-      <div className="layout">
-        {page === 'tickets' ? (
-          <>
-            <TicketsPage selectedTicketId={selectedTicketId} onSelectTicket={setSelectedTicketId} />
-            <TicketDetailPage ticketId={selectedTicketId} />
-          </>
-        ) : null}
-        {page === 'week-time' ? (
-          <WeekTimePage />
-        ) : null}
-        {page === 'workflow-runs' ? (
-          <WorkflowRunsPage />
-        ) : null}
-      </div>
-    </main>
+    <ThemeProvider theme={appTheme}>
+      <CssBaseline />
+      <BrowserRouter>
+        <AppShell>
+          <Routes>
+            <Route path="/" element={<DashboardPage />} />
+            <Route path="/assistant" element={<ChatPage />} />
+            <Route path="/assistant/history" element={<ConversationHistoryPage />} />
+            <Route path="/assistant/history/:id" element={<ConversationDetailPage />} />
+            <Route path="/actions" element={<ActionsPage />} />
+            <Route path="/tickets" element={<TicketsPage />} />
+            <Route path="/tickets/:id" element={<TicketDetailPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
+          </Routes>
+        </AppShell>
+      </BrowserRouter>
+    </ThemeProvider>
   );
 }

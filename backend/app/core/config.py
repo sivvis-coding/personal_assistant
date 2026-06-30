@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Any
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -25,6 +26,7 @@ class Settings(BaseSettings):
     fresh_api_key: str = ""
     fresh_assigned_agent_id: str = ""
     fresh_assigned_agent_field: str = "agent_id"
+    fresh_workspace_id: str = ""
     clickup_api_key: str = ""
     clickup_team_id: str = ""
     clickup_list_id: str = ""
@@ -92,6 +94,26 @@ class Settings(BaseSettings):
         return bool(self.openai_api_key.strip())
 
 
+# Global override populated at startup from database settings.
+_app_settings_override: Settings | None = None
+
+
+def set_app_settings(settings: Settings) -> None:
+    """Override in-memory settings, typically from database values at startup.
+
+    Parameters:
+        settings: Settings instance to use globally.
+
+    Returns:
+        None.
+
+    Edge cases:
+        Call get_settings.cache_clear() before setting when the cache may already be populated.
+    """
+    global _app_settings_override
+    _app_settings_override = settings
+
+
 @lru_cache
 def get_settings() -> Settings:
     """Return cached application settings.
@@ -104,5 +126,28 @@ def get_settings() -> Settings:
 
     Edge cases:
         Tests can clear the cache if environment overrides are required.
+        Startup may populate _app_settings_override from database values.
     """
+    if _app_settings_override is not None:
+        return _app_settings_override
     return Settings()
+
+
+def build_settings_from_overrides(base: Settings, overrides: dict[str, Any]) -> Settings:
+    """Create a new Settings instance merging environment values with database overrides.
+
+    Parameters:
+        base: Base settings loaded from environment.
+        overrides: Dictionary of setting key to value from database.
+
+    Returns:
+        Merged Settings instance.
+
+    Edge cases:
+        Empty string overrides are ignored so the environment value is preserved.
+    """
+    merged = base.model_dump()
+    for key, value in overrides.items():
+        if value not in (None, ""):
+            merged[key] = value
+    return Settings(**merged)

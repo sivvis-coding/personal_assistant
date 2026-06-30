@@ -1,11 +1,13 @@
 import logging
+import re
+from datetime import datetime
 from typing import Any, Literal
 
 import httpx
 
 from app.core.config import Settings
 from app.core.errors import ExternalServiceError
-from app.schemas.ticket import Ticket, TicketRequester
+from app.schemas.ticket import Ticket, TicketConversation, TicketRequester
 
 logger = logging.getLogger(__name__)
 
@@ -149,16 +151,43 @@ class FreshClient:
     ) -> list[Ticket]:
         """List tickets using the Freshservice filter endpoint.
 
-        Note:
-            The filter endpoint does not accept the `include` parameter, so
-            requester details are not populated for these results.
+        The filter endpoint does not support include=requester, so requester
+        details are fetched separately and injected before normalization.
         """
         url = f"{self._settings.fresh_base_url.rstrip('/')}/api/v2/tickets/filter"
         params = self._fresh_params({"query": f'"{field}:{value}"'})
         logger.info("Fresh filter request: %s params=%s", url, params)
         response = await client.get(url, auth=(self._settings.fresh_api_key, "X"), params=params)
         response.raise_for_status()
-        return [self._normalize_ticket(item) for item in self._extract_ticket_list(response.json())]
+        raw_tickets = self._extract_ticket_list(response.json())
+        await self._inject_requester_details(client, raw_tickets)
+        return [self._normalize_ticket(item) for item in raw_tickets]
+
+    async def _inject_requester_details(
+        self, client: httpx.AsyncClient, raw_tickets: list[dict[str, Any]]
+    ) -> None:
+        """Fetch requester info for tickets that lack it and inject in-place."""
+        unique_ids = {t["requester_id"] for t in raw_tickets if t.get("requester_id") and not t.get("requester")}
+        if not unique_ids:
+            return
+        base = self._settings.fresh_base_url.rstrip("/")
+        import asyncio as _asyncio
+
+        async def fetch_one(rid: int) -> tuple[int, dict[str, Any] | None]:
+            try:
+                r = await client.get(f"{base}/api/v2/requesters/{rid}", auth=(self._settings.fresh_api_key, "X"))
+                if r.status_code == 200:
+                    return rid, r.json().get("requester", {})
+            except Exception:
+                pass
+            return rid, None
+
+        results = await _asyncio.gather(*[fetch_one(rid) for rid in unique_ids])
+        lookup: dict[int, dict[str, Any]] = {rid: data for rid, data in results if data}
+        for ticket in raw_tickets:
+            rid = ticket.get("requester_id")
+            if rid and rid in lookup:
+                ticket["requester"] = lookup[rid]
 
     async def _list_all_tickets(self, client: httpx.AsyncClient) -> list[Ticket]:
         """List all tickets without server-side filtering."""
@@ -283,6 +312,170 @@ class FreshClient:
                 return response.json()
         except httpx.HTTPError as error:
             raise ExternalServiceError(f"Fresh add reply failed: {error}") from error
+
+    @staticmethod
+    def mock_conversations(ticket_id: str) -> list[TicketConversation]:
+        """Return exactly three deterministic mock conversation entries.
+
+        Parameters:
+            ticket_id: Ticket ID embedded in mock entry ids.
+
+        Returns:
+            List with one customer_reply, one agent_reply, and one private_note.
+
+        Edge cases:
+            Used in mock mode when Fresh credentials are absent.
+        """
+        return [
+            TicketConversation(
+                id=f"{ticket_id}-conv-1",
+                kind="customer_reply",
+                body_text="Hello, I cannot access the reporting dashboard after the latest release.",
+                from_email="customer@example.com",
+                incoming=True,
+                private=False,
+                created_at=datetime(2024, 1, 10, 9, 0, 0),
+                raw={"mock": True},
+            ),
+            TicketConversation(
+                id=f"{ticket_id}-conv-2",
+                kind="agent_reply",
+                body_text="Thank you for reporting. We are investigating the issue.",
+                from_email="agent@company.com",
+                incoming=False,
+                private=False,
+                created_at=datetime(2024, 1, 10, 10, 30, 0),
+                raw={"mock": True},
+            ),
+            TicketConversation(
+                id=f"{ticket_id}-conv-3",
+                kind="private_note",
+                body_text="Internal: This seems to be related to the deploy on 2024-01-09.",
+                from_email="agent@company.com",
+                incoming=False,
+                private=True,
+                created_at=datetime(2024, 1, 10, 11, 0, 0),
+                raw={"mock": True},
+            ),
+        ]
+
+    async def get_conversations(
+        self, ticket_id: str
+    ) -> tuple[list[TicketConversation], str, bool]:
+        """Fetch conversation thread for a Fresh ticket.
+
+        Parameters:
+            ticket_id: Fresh ticket identifier.
+
+        Returns:
+            Tuple of (conversations, source, error_flag).
+            error_flag is True when Fresh returned an error and the list may be empty.
+
+        Edge cases:
+            Never propagates exceptions — on any Fresh failure returns [], 'fresh', True.
+            Mock mode returns deterministic conversations without hitting the API.
+        """
+        if not self._settings.has_fresh_credentials:
+            return self.mock_conversations(ticket_id), "mock", False
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                url = (
+                    f"{self._settings.fresh_base_url.rstrip('/')}"
+                    f"/api/v2/tickets/{ticket_id}/conversations"
+                )
+                logger.info("Fresh get conversations request: %s", url)
+                response = await client.get(
+                    url,
+                    auth=(self._settings.fresh_api_key, "X"),
+                )
+                response.raise_for_status()
+                payload = response.json()
+                raw_items: list[dict[str, Any]] = (
+                    payload if isinstance(payload, list)
+                    else payload.get("conversations", [])
+                )
+                conversations = [self._normalize_conversation(item) for item in raw_items if isinstance(item, dict)]
+                logger.info(
+                    "Fresh get conversations returned %d items for ticket %s",
+                    len(conversations),
+                    ticket_id,
+                )
+                return conversations, "fresh", False
+        except (httpx.HTTPStatusError, httpx.HTTPError, Exception) as error:
+            logger.error(
+                "Fresh get conversations failed for ticket %s: %s", ticket_id, error
+            )
+            return [], "fresh", True
+
+    @staticmethod
+    def _strip_html(html: str) -> str:
+        """Remove HTML tags from a string and collapse whitespace.
+
+        Parameters:
+            html: Raw HTML string.
+
+        Returns:
+            Plain-text version with tags removed.
+
+        Edge cases:
+            Non-string input returns an empty string.
+        """
+        if not isinstance(html, str):
+            return ""
+        text = re.sub(r"<[^>]+>", " ", html)
+        return " ".join(text.split())
+
+    @staticmethod
+    def _normalize_conversation(payload: dict[str, Any]) -> TicketConversation:
+        """Normalize a Fresh conversation payload into internal schema.
+
+        Parameters:
+            payload: Raw Fresh API conversation entry payload.
+
+        Returns:
+            Normalized TicketConversation.
+
+        Edge cases:
+            kind derivation: private==True → private_note;
+            private==False and incoming==True → customer_reply;
+            private==False and incoming==False → agent_reply.
+            body_text is preferred; falls back to HTML-stripped body.
+        """
+        private = bool(payload.get("private", False))
+        incoming = bool(payload.get("incoming", False))
+
+        if private:
+            kind = "private_note"
+        elif incoming:
+            kind = "customer_reply"
+        else:
+            kind = "agent_reply"
+
+        body_text: str | None = payload.get("body_text") or None
+        body_html: str | None = payload.get("body") or None
+        if body_text is None and body_html:
+            stripped = FreshClient._strip_html(body_html)
+            body_text = stripped if stripped else None
+
+        raw_created = payload.get("created_at")
+        created_at: datetime | None = None
+        if raw_created:
+            try:
+                created_at = datetime.fromisoformat(str(raw_created).replace("Z", "+00:00"))
+            except ValueError:
+                pass
+
+        return TicketConversation(
+            id=str(payload.get("id", "")),
+            kind=kind,
+            body_text=body_text,
+            body_html=body_html,
+            from_email=payload.get("from_email") or None,
+            incoming=incoming,
+            private=private,
+            created_at=created_at,
+            raw=payload,
+        )
 
     def _extract_ticket_list(self, payload: Any) -> list[dict[str, Any]]:
         """Extract ticket dictionaries from Fresh list response payload.

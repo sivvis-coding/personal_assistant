@@ -293,6 +293,38 @@ def _create_clickup_time_entry(team_id: str, task_id: str, start_ms: int, end_ms
     return response.json()
 
 
+def get_clickup_client_names() -> list[str]:
+    """Return available ClickUp client names for the configured list.
+
+    Parameters:
+        None.
+
+    Returns:
+        List of client names. Empty list when credentials are missing, the field
+        is not found, or the field allows free text.
+
+    Edge cases:
+        Missing credentials return an empty list so callers can fall back gracefully.
+    """
+    settings = get_settings()
+    if not settings.clickup_api_key or not settings.clickup_list_id:
+        return []
+
+    try:
+        field = _find_client_field(settings.clickup_list_id)
+    except httpx.HTTPError:
+        return []
+
+    if not field:
+        return []
+
+    field_type = field.get("type", "")
+    if field_type in ("drop_down", "labels"):
+        options = field.get("type_config", {}).get("options", [])
+        return [option["name"] for option in options]
+    return []
+
+
 @tool
 def get_available_clients() -> str:
     """Return available ClickUp clients for the configured list.
@@ -318,11 +350,11 @@ def get_available_clients() -> str:
     if not field:
         return "No client field found in the configured ClickUp list."
 
-    field_type = field.get("type", "")
-    if field_type in ("drop_down", "labels"):
-        options = field.get("type_config", {}).get("options", [])
-        names = [option["name"] for option in options]
+    names = get_clickup_client_names()
+    if names:
         return f"Clientes disponibles: {', '.join(names)}"
+
+    field_type = field.get("type", "")
     return f"El campo cliente es de tipo '{field_type}' (texto libre). El usuario puede escribir cualquier nombre."
 
 

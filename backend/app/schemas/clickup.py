@@ -89,6 +89,28 @@ class ApproveClickUpTaskRequest(BaseModel):
     user_story: UserStory
 
 
+class ClickUpTask(BaseModel):
+    """Represent a ClickUp task for listing.
+
+    Parameters:
+        id: ClickUp task ID.
+        name: Task name.
+        status: Task status name.
+        url: Task URL.
+
+    Returns:
+        ClickUp task value object.
+
+    Edge cases:
+        Missing status is reported as 'unknown'.
+    """
+
+    id: str
+    name: str
+    status: str = "unknown"
+    url: str | None = None
+
+
 class TimeEntry(BaseModel):
     """Represent a ClickUp time entry.
 

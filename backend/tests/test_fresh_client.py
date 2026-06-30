@@ -28,8 +28,8 @@ def test_should_extract_tickets_when_freshservice_returns_wrapped_list() -> None
     assert tickets == [{"id": 123, "subject": "VPN access"}]
 
 
-def test_should_build_assigned_ticket_filter_request_when_agent_id_is_configured() -> None:
-    """Verify assigned-ticket scope uses Freshservice filter endpoint.
+def test_should_build_assigned_ticket_list_request_when_responder_id_is_configured() -> None:
+    """Verify debug request for assigned-ticket scope uses filter endpoint.
 
     Parameters:
         None.
@@ -38,7 +38,7 @@ def test_should_build_assigned_ticket_filter_request_when_agent_id_is_configured
         None.
 
     Edge cases:
-        Freshservice requires an explicit agent ID because the backend cannot infer the current user.
+        Freshservice filter endpoint is the preferred server-side filtering strategy.
     """
     # Arrange
     client = FreshClient(Settings(fresh_assigned_agent_id="123456"))
@@ -51,7 +51,7 @@ def test_should_build_assigned_ticket_filter_request_when_agent_id_is_configured
     assert params == {"query": '"agent_id:123456"'}
 
 
-def test_should_build_assigned_ticket_filter_request_with_configured_field() -> None:
+def test_should_build_assigned_ticket_list_request_with_configured_field() -> None:
     """Verify assigned-ticket filter field can be configured per Fresh account.
 
     Parameters:
@@ -197,7 +197,7 @@ def test_should_normalize_ticket_after_extracting_freshservice_payload() -> None
         None.
 
     Edge cases:
-        Numeric status and priority values are preserved as display-safe strings.
+        Numeric status and priority values are mapped to human-readable labels.
     """
     # Arrange
     client = FreshClient(Settings())
@@ -219,8 +219,8 @@ def test_should_normalize_ticket_after_extracting_freshservice_payload() -> None
     # Assert
     assert ticket.id == "123"
     assert ticket.subject == "VPN access"
-    assert ticket.status == "2"
-    assert ticket.priority == "3"
+    assert ticket.status == "open"
+    assert ticket.priority == "high"
     assert ticket.requester.name == "Ada Lovelace"
     assert ticket.requester.email == "ada@example.com"
     assert ticket.description == "Cannot connect to VPN."

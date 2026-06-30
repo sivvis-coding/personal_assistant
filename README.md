@@ -74,6 +74,33 @@ GET /workflow-runs?limit=50
 GET /workflow-runs?fresh_ticket_id=1001
 ```
 
+## Assistant agent flow
+
+The V2 assistant adds a conversational layer on top of the existing safe workflows:
+
+```txt
+POST /assistant/conversations
+POST /assistant/conversations/{conversation_id}/messages
+GET /assistant/actions/pending
+POST /assistant/actions/{action_id}/approve
+POST /assistant/actions/{action_id}/reject
+```
+
+The assistant currently uses deterministic specialist components:
+
+- Ticket triage: classifies tickets as `action_now`, `backlog_candidate`, `needs_more_info`, `ignore_or_monitor`, or `already_in_backlog`.
+- Prioritization: groups tickets into today's focus, next actions, backlog candidates, blocked items, and monitor-only items.
+- Time tracking: parses natural language time entries and creates pending `save_time_entry` actions for HITL approval.
+- Action approval: creates durable action cards before any write workflow runs.
+
+Safety remains explicit:
+
+1. A backlog request creates a `prepare_clickup_task` action only.
+2. Approving that action generates a reviewed user story draft and a second `approve_clickup_task` action.
+3. Approving the second action creates the ClickUp task through the existing approval workflow.
+
+This keeps the assistant useful without giving it hidden permission to create external state.
+
 ## Backend structure
 
 ```txt
@@ -86,23 +113,33 @@ backend/app/workflows     Business orchestration
 backend/app/schemas       Pydantic contracts
 backend/app/prompts       Versioned AI prompts
 backend/app/tools         Isolated LangChain tools for future agents
+backend/app/assistant     Conversational assistant orchestration and specialist agents
 ```
 
-## Future agent tools
+## Time tracking agent
 
-The backend includes an isolated LangChain tool module for future agent usage:
+The Time Agent connects the existing LangChain time tracking tools to the conversational assistant:
 
 ```txt
-backend/app/tools/clickup_time_tracking.py
+backend/app/assistant/agents/time_agent.py
 ```
 
-Available tools:
+How it works:
 
-- `get_available_clients`: reads the configured ClickUp list and returns available client names when the client field is a dropdown/labels field.
-- `prepare_time_entry`: previews a time entry without creating ClickUp state.
-- `save_time_entry`: creates a ClickUp task and registers a time entry using Europe/Madrid local datetimes. Requires `approved=true`.
+1. The user sends a natural language request such as "Imputa 2h hoy a las 09:00 al cliente Acme por revisión".
+2. `TimeAgent` extracts duration, client, date, start time, and description.
+3. A safe preview is generated and a `save_time_entry` action is created with status `proposed`.
+4. The user reviews the action in the chat or in the pending actions panel and clicks **Aprobar**.
+5. `AssistantActionExecutor` calls `save_time_entry(approved=true)`, which creates the ClickUp task and registers the time entry.
 
-These tools are not connected to the current frontend or API routes yet. They are intended for a future agent that can impute hours in ClickUp.
+Supported request patterns:
+
+- Durations: `3h`, `2h30m`, `30min`, `1 hora`
+- Clients: `cliente Acme`, `al cliente Globex`
+- Dates: `hoy`, `ayer`, `mañana`, `2026-06-29`
+- Times: `09:00`, `9h`
+
+If any required field is missing, the agent replies with a clarification request instead of creating a pending action.
 
 ## Tests
 
