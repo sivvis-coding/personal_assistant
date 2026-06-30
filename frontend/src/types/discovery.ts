@@ -13,6 +13,10 @@ export interface ClickUpDiscoveryResponse {
   lists: ClickUpList[];
 }
 
+export interface ClickUpTeamsResponse {
+  teams: ClickUpTeam[];
+}
+
 export interface ClickUpCustomField {
   id: string;
   name: string;

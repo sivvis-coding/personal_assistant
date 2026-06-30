@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Any
 
@@ -10,6 +11,7 @@ from app.schemas.discovery import (
     ClickUpList,
     ClickUpListFieldsResponse,
     ClickUpTeam,
+    ClickUpTeamsResponse,
     FreshserviceAgent,
     FreshserviceDiscoveryResponse,
     FreshserviceWorkspace,
@@ -32,84 +34,143 @@ class DiscoveryService:
         Invalid credentials are propagated as external service errors.
     """
 
-    async def discover_clickup(self, api_key: str) -> ClickUpDiscoveryResponse:
-        """List ClickUp teams and lists available for the provided API key.
+    async def discover_clickup_teams(self, api_key: str) -> ClickUpTeamsResponse:
+        """Return only ClickUp teams/workspaces — single fast API call.
 
         Parameters:
             api_key: ClickUp API key.
 
         Returns:
-            ClickUp teams and lists.
+            Teams response.
+        """
+        headers = {"Authorization": api_key}
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await client.get("https://api.clickup.com/api/v2/team", headers=headers)
+                response.raise_for_status()
+                teams = [
+                    ClickUpTeam(id=str(t.get("id")), name=str(t.get("name") or "Unnamed team"))
+                    for t in response.json().get("teams", [])
+                ]
+                return ClickUpTeamsResponse(teams=teams)
+        except httpx.HTTPStatusError as error:
+            body = error.response.text
+            raise ExternalServiceError(f"ClickUp teams discovery failed: {error} - {body}") from error
+        except httpx.HTTPError as error:
+            raise ExternalServiceError(f"ClickUp teams discovery failed: {error}") from error
 
-        Edge cases:
-            Lists are discovered by iterating over all teams, spaces, folders, and paginated list endpoints.
+    async def discover_clickup_team_lists(self, api_key: str, team_id: str) -> ClickUpDiscoveryResponse:
+        """Return lists for a single ClickUp team using parallel fetching.
+
+        Parameters:
+            api_key: ClickUp API key.
+            team_id: Team/workspace ID to scope the discovery.
+
+        Returns:
+            Discovery response with lists from the given team only.
+        """
+        headers = {"Authorization": api_key}
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                # Fetch team name and spaces concurrently.
+                teams_resp, spaces = await asyncio.gather(
+                    client.get("https://api.clickup.com/api/v2/team", headers=headers),
+                    self._get_clickup_spaces(client, headers, team_id),
+                )
+                teams_resp.raise_for_status()
+                team_name = next(
+                    (str(t.get("name") or "Unnamed team") for t in teams_resp.json().get("teams", []) if str(t.get("id")) == team_id),
+                    "Unnamed team",
+                )
+
+                lists = await self._fetch_team_lists(client, headers, team_name, spaces)
+                logger.info("ClickUp team '%s' lists discovery: %d lists", team_name, len(lists))
+                return ClickUpDiscoveryResponse(teams=[], lists=lists)
+        except httpx.HTTPStatusError as error:
+            body = error.response.text
+            raise ExternalServiceError(f"ClickUp lists discovery failed: {error} - {body}") from error
+        except httpx.HTTPError as error:
+            raise ExternalServiceError(f"ClickUp lists discovery failed: {error}") from error
+
+    async def _fetch_team_lists(
+        self,
+        client: httpx.AsyncClient,
+        headers: dict[str, str],
+        team_name: str,
+        spaces: list[dict[str, Any]],
+    ) -> list[ClickUpList]:
+        """Fetch all lists for a set of spaces using three parallel rounds."""
+        # Round 1: for each space fetch direct lists + folders concurrently.
+        space_coros = []
+        space_meta: list[tuple[str, str, str]] = []  # (space_id, space_name, task)
+        for space in spaces:
+            space_id = str(space.get("id"))
+            space_name = str(space.get("name") or "Unnamed space")
+            space_coros.append(self._get_clickup_lists(client, headers, f"space/{space_id}"))
+            space_coros.append(self._get_clickup_folders(client, headers, space_id))
+            space_meta.append((space_id, space_name, "lists"))
+            space_meta.append((space_id, space_name, "folders"))
+
+        results = await asyncio.gather(*space_coros)
+
+        lists: list[ClickUpList] = []
+        folder_coros = []
+        folder_meta: list[tuple[str, str, str]] = []  # (space_name, folder_id, folder_name)
+        for (_, space_name, task), result in zip(space_meta, results):
+            if task == "lists":
+                for item in result:
+                    lists.append(ClickUpList(
+                        id=str(item.get("id")),
+                        name=f"{team_name} > {space_name} > {item.get('name')}",
+                    ))
+            else:
+                for folder in result:
+                    folder_id = str(folder.get("id"))
+                    folder_name = str(folder.get("name") or "Unnamed folder")
+                    folder_meta.append((space_name, folder_id, folder_name))
+                    folder_coros.append(self._get_clickup_lists(client, headers, f"folder/{folder_id}"))
+
+        # Round 2: fetch all folder lists concurrently.
+        if folder_coros:
+            folder_results = await asyncio.gather(*folder_coros)
+            for (space_name, _fid, folder_name), folder_lists in zip(folder_meta, folder_results):
+                for item in folder_lists:
+                    lists.append(ClickUpList(
+                        id=str(item.get("id")),
+                        name=f"{team_name} > {space_name} > {folder_name} > {item.get('name')}",
+                    ))
+
+        return lists
+
+    async def discover_clickup(self, api_key: str) -> ClickUpDiscoveryResponse:
+        """List all ClickUp teams and lists (all teams, all spaces, parallel fetch).
+
+        Parameters:
+            api_key: ClickUp API key.
+
+        Returns:
+            ClickUp teams and all lists.
         """
         headers = {"Authorization": api_key}
         try:
             async with httpx.AsyncClient(timeout=30) as client:
                 teams_response = await client.get("https://api.clickup.com/api/v2/team", headers=headers)
                 teams_response.raise_for_status()
-                teams_data = teams_response.json()
+                raw_teams = teams_response.json().get("teams", [])
+                teams = [ClickUpTeam(id=str(t.get("id")), name=str(t.get("name") or "Unnamed team")) for t in raw_teams]
 
-                teams: list[ClickUpTeam] = []
-                lists: list[ClickUpList] = []
+                spaces_per_team = await asyncio.gather(
+                    *[self._get_clickup_spaces(client, headers, str(t.get("id"))) for t in raw_teams]
+                )
 
-                for team in teams_data.get("teams", []):
-                    team_id = str(team.get("id"))
+                all_lists: list[ClickUpList] = []
+                for team, spaces in zip(raw_teams, spaces_per_team):
                     team_name = str(team.get("name") or "Unnamed team")
-                    teams.append(ClickUpTeam(id=team_id, name=team_name))
-                    logger.info("ClickUp team discovered: %s (%s)", team_name, team_id)
+                    team_lists = await self._fetch_team_lists(client, headers, team_name, spaces)
+                    all_lists.extend(team_lists)
 
-                    spaces = await self._get_clickup_spaces(client, headers, team_id)
-                    logger.info("ClickUp team %s: %d spaces", team_name, len(spaces))
-                    for space in spaces:
-                        space_id = str(space.get("id"))
-                        space_name = str(space.get("name") or "Unnamed space")
-
-                        space_lists = await self._get_clickup_lists(
-                            client, headers, f"space/{space_id}"
-                        )
-                        logger.info(
-                            "ClickUp space %s > %s: %d direct lists",
-                            team_name,
-                            space_name,
-                            len(space_lists),
-                        )
-                        for list_item in space_lists:
-                            lists.append(
-                                ClickUpList(
-                                    id=str(list_item.get("id")),
-                                    name=f"{team_name} > {space_name} > {list_item.get('name')}",
-                                )
-                            )
-
-                        folders = await self._get_clickup_folders(client, headers, space_id)
-                        logger.info(
-                            "ClickUp space %s > %s: %d folders", team_name, space_name, len(folders)
-                        )
-                        for folder in folders:
-                            folder_id = str(folder.get("id"))
-                            folder_name = str(folder.get("name") or "Unnamed folder")
-                            folder_lists = await self._get_clickup_lists(
-                                client, headers, f"folder/{folder_id}"
-                            )
-                            logger.info(
-                                "ClickUp folder %s > %s > %s: %d lists",
-                                team_name,
-                                space_name,
-                                folder_name,
-                                len(folder_lists),
-                            )
-                            for list_item in folder_lists:
-                                lists.append(
-                                    ClickUpList(
-                                        id=str(list_item.get("id")),
-                                        name=f"{team_name} > {space_name} > {folder_name} > {list_item.get('name')}",
-                                    )
-                                )
-
-                logger.info("ClickUp discovery complete: %d teams, %d lists", len(teams), len(lists))
-                return ClickUpDiscoveryResponse(teams=teams, lists=lists)
+                logger.info("ClickUp discovery complete: %d teams, %d lists", len(teams), len(all_lists))
+                return ClickUpDiscoveryResponse(teams=teams, lists=all_lists)
         except httpx.HTTPStatusError as error:
             body = error.response.text
             logger.error("ClickUp discovery failed: %s - body: %s", error, body)

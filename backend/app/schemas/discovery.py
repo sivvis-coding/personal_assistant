@@ -55,6 +55,16 @@ class ClickUpList(BaseModel):
     name: str
 
 
+class ClickUpTeamsResponse(BaseModel):
+    """Represent ClickUp teams/workspaces only (fast, single API call).
+
+    Parameters:
+        teams: Available teams/workspaces.
+    """
+
+    teams: list[ClickUpTeam]
+
+
 class ClickUpDiscoveryResponse(BaseModel):
     """Represent ClickUp discoverable resources.
 

@@ -24,13 +24,14 @@ import DeleteIcon from '@mui/icons-material/Delete';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import { getSettings, updateSettings } from '../api/settings';
 import {
-  discoverClickUp,
   discoverClickUpListFields,
+  discoverClickUpTeamLists,
+  discoverClickUpTeams,
   discoverFreshservice,
   discoverFreshserviceWorkspaces,
 } from '../api/discovery';
 import type { AppSettings, ClickUpCustomFieldConfig, ClickUpListConfig } from '../types/settings';
-import type { ClickUpCustomField, ClickUpList, FreshserviceAgent, FreshserviceWorkspace } from '../types/discovery';
+import type { ClickUpCustomField, ClickUpList, ClickUpTeam, FreshserviceAgent, FreshserviceWorkspace } from '../types/discovery';
 
 const defaultSettings: AppSettings = {
   fresh_base_url: '',
@@ -66,6 +67,12 @@ export function SettingsPage() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
 
+  const [clickupTeamDiscovery, setClickupTeamDiscovery] = useState<DiscoveryState<ClickUpTeam>>({
+    loading: false,
+    options: [],
+    error: null,
+  });
+  const [selectedTeam, setSelectedTeam] = useState<ClickUpTeam | null>(null);
   const [clickupDiscovery, setClickupDiscovery] = useState<DiscoveryState<ClickUpList>>({
     loading: false,
     options: [],
@@ -119,11 +126,24 @@ export function SettingsPage() {
     setSettings((current) => ({ ...current, [field]: value }));
   }
 
-  async function handleDiscoverClickUp(): Promise<void> {
+  async function handleDiscoverClickUpTeams(): Promise<void> {
+    if (!settings.clickup_api_key.trim()) return;
+    setClickupTeamDiscovery({ loading: true, options: [], error: null });
+    setClickupDiscovery({ loading: false, options: [], error: null });
+    setSelectedTeam(null);
+    try {
+      const response = await discoverClickUpTeams(settings.clickup_api_key);
+      setClickupTeamDiscovery({ loading: false, options: response.teams, error: null });
+    } catch (caught) {
+      setClickupTeamDiscovery({ loading: false, options: [], error: (caught as Error).message });
+    }
+  }
+
+  async function handleDiscoverClickUpLists(teamId: string): Promise<void> {
     if (!settings.clickup_api_key.trim()) return;
     setClickupDiscovery({ loading: true, options: [], error: null });
     try {
-      const response = await discoverClickUp(settings.clickup_api_key);
+      const response = await discoverClickUpTeamLists(settings.clickup_api_key, teamId);
       setClickupDiscovery({ loading: false, options: response.lists, error: null });
     } catch (caught) {
       setClickupDiscovery({ loading: false, options: [], error: (caught as Error).message });
@@ -395,7 +415,7 @@ export function SettingsPage() {
               helperText="Opcional si ya seleccionaste listas"
             />
 
-            {/* List discovery + selector */}
+            {/* List discovery + selector: two-step (team → lists) */}
             <Box>
               <Typography variant="subtitle2" gutterBottom>
                 Listas configuradas
@@ -404,16 +424,49 @@ export function SettingsPage() {
                 Añade las listas que usa tu equipo. Para cada una puedes indicar cuándo usarla y describir sus campos personalizados para que el agente sepa cómo rellenarlos.
               </Typography>
 
-              <Box sx={{ display: 'flex', gap: 1, mb: 2 }}>
+              {/* Step 1: pick workspace */}
+              <Box sx={{ display: 'flex', gap: 1, mb: 1 }}>
                 <Button
                   variant="outlined"
-                  startIcon={<SearchIcon />}
-                  disabled={clickupDiscovery.loading || !settings.clickup_api_key.trim()}
-                  onClick={() => void handleDiscoverClickUp()}
+                  startIcon={clickupTeamDiscovery.loading ? <CircularProgress size={16} /> : <SearchIcon />}
+                  disabled={clickupTeamDiscovery.loading || !settings.clickup_api_key.trim()}
+                  onClick={() => void handleDiscoverClickUpTeams()}
                 >
-                  {clickupDiscovery.loading ? <CircularProgress size={20} /> : 'Descubrir listas'}
+                  {clickupTeamDiscovery.loading ? 'Buscando workspaces…' : 'Descubrir workspaces'}
                 </Button>
               </Box>
+
+              {clickupTeamDiscovery.error ? (
+                <Alert severity="error" sx={{ mb: 1 }}>{clickupTeamDiscovery.error}</Alert>
+              ) : null}
+
+              {clickupTeamDiscovery.options.length > 0 ? (
+                <Box sx={{ display: 'flex', gap: 1, mb: 2, alignItems: 'flex-start' }}>
+                  <Autocomplete
+                    options={clickupTeamDiscovery.options}
+                    getOptionLabel={(option) => option.name}
+                    value={selectedTeam}
+                    onChange={(_, newValue) => {
+                      setSelectedTeam(newValue);
+                      setClickupDiscovery({ loading: false, options: [], error: null });
+                    }}
+                    renderInput={(params) => (
+                      <TextField {...params} label="Workspace" placeholder="Selecciona un workspace…" size="small" />
+                    )}
+                    sx={{ flex: 1 }}
+                  />
+                  {/* Step 2: load lists for selected workspace */}
+                  <Button
+                    variant="outlined"
+                    startIcon={clickupDiscovery.loading ? <CircularProgress size={16} /> : <SearchIcon />}
+                    disabled={!selectedTeam || clickupDiscovery.loading}
+                    onClick={() => selectedTeam && void handleDiscoverClickUpLists(selectedTeam.id)}
+                    sx={{ mt: 0.5 }}
+                  >
+                    {clickupDiscovery.loading ? 'Cargando listas…' : 'Cargar listas'}
+                  </Button>
+                </Box>
+              ) : null}
 
               {clickupDiscovery.error ? (
                 <Alert severity="error" sx={{ mb: 1 }}>{clickupDiscovery.error}</Alert>
@@ -430,7 +483,7 @@ export function SettingsPage() {
                     if (newValue) addClickUpList(newValue);
                   }}
                   renderInput={(params) => (
-                    <TextField {...params} label="Añadir lista" placeholder="Buscar y añadir lista..." size="small" />
+                    <TextField {...params} label="Añadir lista" placeholder="Buscar y añadir lista…" size="small" />
                   )}
                   sx={{ mb: 2 }}
                 />

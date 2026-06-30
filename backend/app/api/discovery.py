@@ -5,6 +5,7 @@ from app.api.deps import require_auth
 from app.schemas.discovery import (
     ClickUpDiscoveryResponse,
     ClickUpListFieldsResponse,
+    ClickUpTeamsResponse,
     FreshserviceDiscoveryResponse,
     FreshserviceWorkspacesResponse,
 )
@@ -19,6 +20,13 @@ class ClickUpDiscoveryRequest(BaseModel):
     api_key: str
 
 
+class ClickUpTeamListsRequest(BaseModel):
+    """Request body for fetching lists scoped to a single ClickUp team."""
+
+    api_key: str
+    team_id: str
+
+
 class ClickUpListFieldsRequest(BaseModel):
     """Request body for ClickUp list field discovery."""
 
@@ -31,6 +39,34 @@ class FreshserviceDiscoveryRequest(BaseModel):
 
     base_url: str
     api_key: str
+
+
+@router.post("/clickup/teams", response_model=ClickUpTeamsResponse)
+async def discover_clickup_teams(request: ClickUpDiscoveryRequest) -> ClickUpTeamsResponse:
+    """Discover ClickUp teams/workspaces only — single fast API call.
+
+    Parameters:
+        request: Contains the ClickUp API key.
+
+    Returns:
+        ClickUp teams.
+    """
+    service = DiscoveryService()
+    return await service.discover_clickup_teams(request.api_key)
+
+
+@router.post("/clickup/lists", response_model=ClickUpDiscoveryResponse)
+async def discover_clickup_team_lists(request: ClickUpTeamListsRequest) -> ClickUpDiscoveryResponse:
+    """Discover ClickUp lists for a specific team/workspace.
+
+    Parameters:
+        request: Contains the ClickUp API key and team ID.
+
+    Returns:
+        ClickUp lists for the given team.
+    """
+    service = DiscoveryService()
+    return await service.discover_clickup_team_lists(request.api_key, request.team_id)
 
 
 @router.post("/clickup", response_model=ClickUpDiscoveryResponse)

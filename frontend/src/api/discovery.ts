@@ -2,12 +2,33 @@ import { apiRequest } from './client';
 import type {
   ClickUpDiscoveryResponse,
   ClickUpListFieldsResponse,
+  ClickUpTeamsResponse,
   FreshserviceDiscoveryResponse,
   FreshserviceWorkspacesResponse,
 } from '../types/discovery';
 
 /**
- * Discover ClickUp teams and lists using the provided API key.
+ * Discover ClickUp teams/workspaces only — single fast API call.
+ */
+export function discoverClickUpTeams(apiKey: string): Promise<ClickUpTeamsResponse> {
+  return apiRequest<ClickUpTeamsResponse>('/settings/discover/clickup/teams', {
+    method: 'POST',
+    body: JSON.stringify({ api_key: apiKey }),
+  });
+}
+
+/**
+ * Discover ClickUp lists scoped to a specific team/workspace.
+ */
+export function discoverClickUpTeamLists(apiKey: string, teamId: string): Promise<ClickUpDiscoveryResponse> {
+  return apiRequest<ClickUpDiscoveryResponse>('/settings/discover/clickup/lists', {
+    method: 'POST',
+    body: JSON.stringify({ api_key: apiKey, team_id: teamId }),
+  });
+}
+
+/**
+ * Discover all ClickUp teams and lists using the provided API key.
  *
  * Parameters:
  *   apiKey: ClickUp API key.
