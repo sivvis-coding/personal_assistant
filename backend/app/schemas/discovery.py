@@ -1,6 +1,30 @@
 from pydantic import BaseModel
 
 
+class ClickUpCustomField(BaseModel):
+    """Represent a ClickUp custom field returned by the discovery API.
+
+    Parameters:
+        id: Field UUID.
+        name: Field display name.
+        type_: Field type (text, number, dropdown, etc.).
+    """
+
+    id: str
+    name: str
+    type_: str = ""
+
+
+class ClickUpListFieldsResponse(BaseModel):
+    """Contain discovered custom fields for a ClickUp list.
+
+    Parameters:
+        fields: Custom fields defined on the list.
+    """
+
+    fields: list[ClickUpCustomField]
+
+
 class ClickUpTeam(BaseModel):
     """Represent a ClickUp team/workspace.
 

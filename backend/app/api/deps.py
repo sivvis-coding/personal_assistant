@@ -26,6 +26,7 @@ from app.repositories.workflow_run_repository import WorkflowRunRepository
 from app.services.ai_service import AiService
 from app.services.clickup_service import ClickUpService
 from app.services.clickup_status_sync_service import ClickUpStatusSyncService
+from app.services.settings_service import SettingsService
 from app.services.ticket_service import TicketService
 from app.tools.assistant_action.tool import AssistantActionTool
 from app.tools.base import ToolRegistry
@@ -232,10 +233,25 @@ def get_app_settings_repository(mongo_manager: MongoManager = Depends(get_mongo_
     return AppSettingsRepository(mongo_manager.database)
 
 
+def get_settings_service(
+    repository: AppSettingsRepository = Depends(get_app_settings_repository),
+) -> SettingsService:
+    """Create settings service dependency.
+
+    Parameters:
+        repository: App settings repository dependency.
+
+    Returns:
+        Settings service.
+    """
+    return SettingsService(repository)
+
+
 def get_assistant_context_builder(
     ticket_service: TicketService = Depends(get_ticket_service),
     clickup_service: ClickUpService = Depends(get_clickup_service),
     integration_link_repository: IntegrationLinkRepository = Depends(get_integration_link_repository),
+    settings_service: SettingsService = Depends(get_settings_service),
 ) -> AssistantContextBuilder:
     """Create assistant context builder dependency.
 
@@ -243,6 +259,7 @@ def get_assistant_context_builder(
         ticket_service: Ticket service dependency.
         clickup_service: ClickUp service dependency.
         integration_link_repository: Integration link repository dependency.
+        settings_service: Settings service dependency.
 
     Returns:
         Assistant context builder.
@@ -250,7 +267,7 @@ def get_assistant_context_builder(
     Edge cases:
         None.
     """
-    return AssistantContextBuilder(ticket_service, clickup_service, integration_link_repository)
+    return AssistantContextBuilder(ticket_service, clickup_service, integration_link_repository, settings_service)
 
 
 def get_memory_facade(request: Request) -> MemoryFacade:

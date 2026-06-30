@@ -34,25 +34,30 @@ class ClickUpClient:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
 
-    async def create_task_from_ticket(self, ticket: Ticket, user_story: UserStory) -> ClickUpTaskResult:
+    async def create_task_from_ticket(
+        self, ticket: Ticket, user_story: UserStory, list_id: str | None = None
+    ) -> ClickUpTaskResult:
         """Create a ClickUp task from a ticket and user story.
 
         Parameters:
             ticket: Source ticket.
             user_story: Generated user story.
+            list_id: Target list ID override. Falls back to settings clickup_list_id.
 
         Returns:
             ClickUp task result.
 
         Edge cases:
             Missing credentials return a mock task instead of calling ClickUp.
+            list_id override takes precedence over the settings default.
         """
-        if not self._settings.has_clickup_credentials:
+        effective_list_id = list_id or self._settings.clickup_list_id
+        if not (self._settings.clickup_api_key.strip() and effective_list_id.strip()):
             return ClickUpTaskResult(id=f"mock-clickup-{ticket.id}", url="http://localhost/mock-clickup-task", source="mock")
         try:
             async with httpx.AsyncClient(timeout=20) as client:
                 response = await client.post(
-                    f"https://api.clickup.com/api/v2/list/{self._settings.clickup_list_id}/task",
+                    f"https://api.clickup.com/api/v2/list/{effective_list_id}/task",
                     headers={
                         "accept": "application/json",
                         "content-type": "application/json",

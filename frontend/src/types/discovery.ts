@@ -13,6 +13,16 @@ export interface ClickUpDiscoveryResponse {
   lists: ClickUpList[];
 }
 
+export interface ClickUpCustomField {
+  id: string;
+  name: string;
+  type_: string;
+}
+
+export interface ClickUpListFieldsResponse {
+  fields: ClickUpCustomField[];
+}
+
 export interface FreshserviceAgent {
   id: string;
   name: string;

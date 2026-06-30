@@ -90,8 +90,10 @@ class ConversationAgent:
                 "ticket_source": context.ticket_source,
                 "week_time": context.week_time.model_dump(),
                 "existing_backlog_ticket_ids": context.existing_backlog_ticket_ids,
+                "clickup_lists": [lst.model_dump() for lst in context.clickup_lists],
             },
             "available_tools": _tool_descriptions(tools),
+            "agent_instructions": context.agent_system_prompt,
         }
 
         tool_results: list[dict[str, Any]] = []

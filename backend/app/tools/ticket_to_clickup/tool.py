@@ -103,7 +103,8 @@ class TicketToClickUpTool(ToolInterface):
                 ticket_id = self._require(kwargs, "ticket_id")
                 user_story_data = self._require(kwargs, "user_story")
                 user_story = UserStory.model_validate(user_story_data)
-                response = await self._approve(ticket_id, user_story)
+                list_id = kwargs.get("list_id") or None
+                response = await self._approve(ticket_id, user_story, list_id=list_id)
                 return ToolResult.ok(data=response.model_dump(mode="json"), message="ClickUp task created")
 
             return ToolResult.error(message=f"Unknown operation '{operation}' for ticket_to_clickup tool")
@@ -150,12 +151,15 @@ class TicketToClickUpTool(ToolInterface):
             await self._workflow_run_repository.finish_failure(run_id, str(error))
             raise
 
-    async def _approve(self, ticket_id: str, approved_user_story: UserStory) -> CreateClickUpTaskWorkflowResponse:
+    async def _approve(
+        self, ticket_id: str, approved_user_story: UserStory, list_id: str | None = None
+    ) -> CreateClickUpTaskWorkflowResponse:
         """Create a ClickUp task after explicit user approval.
 
         Parameters:
             ticket_id: Fresh ticket identifier.
             approved_user_story: Reviewed user story from the frontend.
+            list_id: Optional ClickUp list ID override. Falls back to settings default.
 
         Returns:
             ClickUp task creation response.
@@ -185,7 +189,9 @@ class TicketToClickUpTool(ToolInterface):
                 )
                 link_id = str(existing_link["id"])
             else:
-                clickup_task = await self._clickup_client.create_task_from_ticket(ticket_response.ticket, approved_user_story)
+                clickup_task = await self._clickup_client.create_task_from_ticket(
+                    ticket_response.ticket, approved_user_story, list_id=list_id
+                )
                 link_id = await self._integration_link_repository.save_link(
                     IntegrationLinkDocument(
                         source_system="fresh",

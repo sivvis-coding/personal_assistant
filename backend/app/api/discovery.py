@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends
 from app.api.deps import require_auth
 from app.schemas.discovery import (
     ClickUpDiscoveryResponse,
+    ClickUpListFieldsResponse,
     FreshserviceDiscoveryResponse,
     FreshserviceWorkspacesResponse,
 )
@@ -16,6 +17,13 @@ class ClickUpDiscoveryRequest(BaseModel):
     """Request body for ClickUp discovery."""
 
     api_key: str
+
+
+class ClickUpListFieldsRequest(BaseModel):
+    """Request body for ClickUp list field discovery."""
+
+    api_key: str
+    list_id: str
 
 
 class FreshserviceDiscoveryRequest(BaseModel):
@@ -40,6 +48,23 @@ async def discover_clickup(request: ClickUpDiscoveryRequest) -> ClickUpDiscovery
     """
     service = DiscoveryService()
     return await service.discover_clickup(request.api_key)
+
+
+@router.post("/clickup/fields", response_model=ClickUpListFieldsResponse)
+async def discover_clickup_list_fields(request: ClickUpListFieldsRequest) -> ClickUpListFieldsResponse:
+    """Discover custom fields configured on a specific ClickUp list.
+
+    Parameters:
+        request: Contains the ClickUp API key and list ID.
+
+    Returns:
+        Custom fields for the list.
+
+    Edge cases:
+        Lists with no custom fields return an empty fields array.
+    """
+    service = DiscoveryService()
+    return await service.discover_clickup_list_fields(request.api_key, request.list_id)
 
 
 @router.post("/freshservice", response_model=FreshserviceDiscoveryResponse)

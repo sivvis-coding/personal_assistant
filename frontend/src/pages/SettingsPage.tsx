@@ -1,27 +1,36 @@
 import { useEffect, useState } from 'react';
 import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Alert,
   Autocomplete,
   Box,
   Button,
   Card,
   CardContent,
+  Chip,
   CircularProgress,
   Divider,
+  IconButton,
   TextField,
+  Tooltip,
   Typography,
 } from '@mui/material';
 import SaveIcon from '@mui/icons-material/Save';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import SearchIcon from '@mui/icons-material/Search';
+import DeleteIcon from '@mui/icons-material/Delete';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import { getSettings, updateSettings } from '../api/settings';
 import {
   discoverClickUp,
+  discoverClickUpListFields,
   discoverFreshservice,
   discoverFreshserviceWorkspaces,
 } from '../api/discovery';
-import type { AppSettings } from '../types/settings';
-import type { ClickUpList, FreshserviceAgent, FreshserviceWorkspace } from '../types/discovery';
+import type { AppSettings, ClickUpCustomFieldConfig, ClickUpListConfig } from '../types/settings';
+import type { ClickUpCustomField, ClickUpList, FreshserviceAgent, FreshserviceWorkspace } from '../types/discovery';
 
 const defaultSettings: AppSettings = {
   fresh_base_url: '',
@@ -31,7 +40,8 @@ const defaultSettings: AppSettings = {
   fresh_workspace_id: '',
   clickup_api_key: '',
   clickup_team_id: '',
-  clickup_list_id: '',
+  clickup_lists: [],
+  agent_system_prompt: '',
   openai_api_key: '',
   openai_model: 'gpt-5.4',
 };
@@ -42,18 +52,13 @@ interface DiscoveryState<T> {
   error: string | null;
 }
 
-/**
- * Render the settings page for configuring integrations with discovery.
- *
- * Parameters:
- *   None.
- *
- * Returns:
- *   JSX settings page.
- *
- * Edge cases:
- *   Settings are saved to the database but require a backend restart to take effect.
- */
+interface ListFieldsState {
+  loading: boolean;
+  fields: ClickUpCustomField[];
+  error: string | null;
+  discovered: boolean;
+}
+
 export function SettingsPage() {
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [isLoading, setIsLoading] = useState(true);
@@ -76,6 +81,8 @@ export function SettingsPage() {
     options: [],
     error: null,
   });
+  // Per-list field discovery state keyed by list ID
+  const [listFieldsState, setListFieldsState] = useState<Record<string, ListFieldsState>>({});
 
   useEffect(() => {
     loadSettings();
@@ -108,7 +115,7 @@ export function SettingsPage() {
     }
   }
 
-  function updateField<K extends keyof AppSettings>(field: K, value: string): void {
+  function updateField<K extends keyof AppSettings>(field: K, value: AppSettings[K]): void {
     setSettings((current) => ({ ...current, [field]: value }));
   }
 
@@ -148,6 +155,89 @@ export function SettingsPage() {
     }
   }
 
+  function addClickUpList(list: ClickUpList): void {
+    if (settings.clickup_lists.some((l) => l.id === list.id)) return;
+    const newList: ClickUpListConfig = {
+      id: list.id,
+      name: list.name,
+      description: '',
+      custom_fields: [],
+    };
+    updateField('clickup_lists', [...settings.clickup_lists, newList]);
+  }
+
+  function removeClickUpList(listId: string): void {
+    updateField('clickup_lists', settings.clickup_lists.filter((l) => l.id !== listId));
+    setListFieldsState((prev) => {
+      const next = { ...prev };
+      delete next[listId];
+      return next;
+    });
+  }
+
+  function updateListField(listId: string, key: keyof ClickUpListConfig, value: string): void {
+    updateField(
+      'clickup_lists',
+      settings.clickup_lists.map((l) => (l.id === listId ? { ...l, [key]: value } : l)),
+    );
+  }
+
+  function updateCustomFieldDescription(listId: string, fieldId: string, description: string): void {
+    updateField(
+      'clickup_lists',
+      settings.clickup_lists.map((l) => {
+        if (l.id !== listId) return l;
+        const existing = l.custom_fields.find((f) => f.field_id === fieldId);
+        if (existing) {
+          return {
+            ...l,
+            custom_fields: l.custom_fields.map((f) =>
+              f.field_id === fieldId ? { ...f, description } : f,
+            ),
+          };
+        }
+        return l;
+      }),
+    );
+  }
+
+  async function handleDiscoverListFields(listId: string): Promise<void> {
+    if (!settings.clickup_api_key.trim()) return;
+    setListFieldsState((prev) => ({
+      ...prev,
+      [listId]: { loading: true, fields: [], error: null, discovered: false },
+    }));
+    try {
+      const response = await discoverClickUpListFields(settings.clickup_api_key, listId);
+      setListFieldsState((prev) => ({
+        ...prev,
+        [listId]: { loading: false, fields: response.fields, error: null, discovered: true },
+      }));
+      // Merge discovered fields into list config, preserving existing descriptions
+      const existingList = settings.clickup_lists.find((l) => l.id === listId);
+      if (!existingList) return;
+      const mergedFields: ClickUpCustomFieldConfig[] = response.fields.map((f) => {
+        const existing = existingList.custom_fields.find((cf) => cf.field_id === f.id);
+        return {
+          field_id: f.id,
+          field_name: f.name,
+          description: existing?.description ?? '',
+        };
+      });
+      updateField(
+        'clickup_lists',
+        settings.clickup_lists.map((l) =>
+          l.id === listId ? { ...l, custom_fields: mergedFields } : l,
+        ),
+      );
+    } catch (caught) {
+      setListFieldsState((prev) => ({
+        ...prev,
+        [listId]: { loading: false, fields: [], error: (caught as Error).message, discovered: false },
+      }));
+    }
+  }
+
   if (isLoading) {
     return (
       <Box sx={{ display: 'flex', justifyContent: 'center', mt: 8 }}>
@@ -174,6 +264,29 @@ export function SettingsPage() {
         </Alert>
       ) : null}
 
+      {/* Agent system prompt */}
+      <Card sx={{ mb: 3 }}>
+        <CardContent>
+          <Typography variant="h6" gutterBottom>
+            Prompt del agente
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            Instrucciones adicionales que el agente seguirá además de su comportamiento base. Úsalo para ajustar el tono, prioridades, o flujos específicos de tu equipo.
+          </Typography>
+          <TextField
+            label="Instrucciones personalizadas"
+            multiline
+            minRows={4}
+            maxRows={12}
+            value={settings.agent_system_prompt}
+            onChange={(event) => updateField('agent_system_prompt', event.target.value)}
+            fullWidth
+            placeholder="Ejemplo: Prioriza siempre los tickets de tipo 'incident'. Cuando propongas enviar un ticket al backlog, usa un tono formal con el cliente."
+          />
+        </CardContent>
+      </Card>
+
+      {/* Freshservice */}
       <Card sx={{ mb: 3 }}>
         <CardContent>
           <Typography variant="h6" gutterBottom>
@@ -260,6 +373,7 @@ export function SettingsPage() {
         </CardContent>
       </Card>
 
+      {/* ClickUp */}
       <Card sx={{ mb: 3 }}>
         <CardContent>
           <Typography variant="h6" gutterBottom>
@@ -273,44 +387,173 @@ export function SettingsPage() {
               onChange={(event) => updateField('clickup_api_key', event.target.value)}
               fullWidth
             />
-            <Box sx={{ display: 'flex', gap: 1 }}>
-              <Button
-                variant="outlined"
-                startIcon={<SearchIcon />}
-                disabled={clickupDiscovery.loading || !settings.clickup_api_key.trim()}
-                onClick={() => void handleDiscoverClickUp()}
-              >
-                {clickupDiscovery.loading ? <CircularProgress size={20} /> : 'Descubrir listas'}
-              </Button>
-            </Box>
-
-            {clickupDiscovery.error ? (
-              <Alert severity="error">{clickupDiscovery.error}</Alert>
-            ) : null}
-
-            {clickupDiscovery.options.length > 0 ? (
-              <Autocomplete
-                options={clickupDiscovery.options}
-                getOptionLabel={(option) => option.name}
-                value={clickupDiscovery.options.find((list) => list.id === settings.clickup_list_id) || null}
-                onChange={(_, newValue) => updateField('clickup_list_id', newValue?.id ?? '')}
-                renderInput={(params) => (
-                  <TextField {...params} label="Lista de ClickUp" placeholder="Buscar lista..." />
-                )}
-              />
-            ) : null}
-
             <TextField
               label="Team ID"
               value={settings.clickup_team_id}
               onChange={(event) => updateField('clickup_team_id', event.target.value)}
               fullWidth
-              helperText="Opcional si ya seleccionaste una lista"
+              helperText="Opcional si ya seleccionaste listas"
             />
+
+            {/* List discovery + selector */}
+            <Box>
+              <Typography variant="subtitle2" gutterBottom>
+                Listas configuradas
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                Añade las listas que usa tu equipo. Para cada una puedes indicar cuándo usarla y describir sus campos personalizados para que el agente sepa cómo rellenarlos.
+              </Typography>
+
+              <Box sx={{ display: 'flex', gap: 1, mb: 2 }}>
+                <Button
+                  variant="outlined"
+                  startIcon={<SearchIcon />}
+                  disabled={clickupDiscovery.loading || !settings.clickup_api_key.trim()}
+                  onClick={() => void handleDiscoverClickUp()}
+                >
+                  {clickupDiscovery.loading ? <CircularProgress size={20} /> : 'Descubrir listas'}
+                </Button>
+              </Box>
+
+              {clickupDiscovery.error ? (
+                <Alert severity="error" sx={{ mb: 1 }}>{clickupDiscovery.error}</Alert>
+              ) : null}
+
+              {clickupDiscovery.options.length > 0 ? (
+                <Autocomplete
+                  options={clickupDiscovery.options.filter(
+                    (list) => !settings.clickup_lists.some((l) => l.id === list.id),
+                  )}
+                  getOptionLabel={(option) => option.name}
+                  value={null}
+                  onChange={(_, newValue) => {
+                    if (newValue) addClickUpList(newValue);
+                  }}
+                  renderInput={(params) => (
+                    <TextField {...params} label="Añadir lista" placeholder="Buscar y añadir lista..." size="small" />
+                  )}
+                  sx={{ mb: 2 }}
+                />
+              ) : null}
+
+              {/* Configured lists */}
+              {settings.clickup_lists.length === 0 ? (
+                <Typography variant="body2" color="text.secondary">
+                  No hay listas configuradas. Descubre las listas disponibles y añádelas.
+                </Typography>
+              ) : (
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                  {settings.clickup_lists.map((list) => {
+                    const fieldsState = listFieldsState[list.id];
+                    return (
+                      <Accordion key={list.id} defaultExpanded={false} variant="outlined">
+                        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flex: 1, mr: 1 }}>
+                            <Typography variant="subtitle2" sx={{ flex: 1 }}>
+                              {list.name}
+                            </Typography>
+                            {list.description && (
+                              <Chip label="con descripción" size="small" color="primary" variant="outlined" />
+                            )}
+                            {list.custom_fields.length > 0 && (
+                              <Chip
+                                label={`${list.custom_fields.length} campos`}
+                                size="small"
+                                color="secondary"
+                                variant="outlined"
+                              />
+                            )}
+                          </Box>
+                          <Tooltip title="Eliminar lista">
+                            <IconButton
+                              size="small"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                removeClickUpList(list.id);
+                              }}
+                            >
+                              <DeleteIcon fontSize="small" />
+                            </IconButton>
+                          </Tooltip>
+                        </AccordionSummary>
+                        <AccordionDetails>
+                          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                            <TextField
+                              label="Descripción de uso"
+                              multiline
+                              minRows={2}
+                              value={list.description}
+                              onChange={(e) => updateListField(list.id, 'description', e.target.value)}
+                              fullWidth
+                              placeholder="Ej: Usar para bugs reportados por usuarios en producción. No usar para solicitudes de funcionalidad nueva."
+                              helperText="El agente usa esto para decidir a qué lista enviar cada tarea."
+                            />
+
+                            {/* Custom fields */}
+                            <Box>
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                                <Typography variant="body2" color="text.secondary" sx={{ flex: 1 }}>
+                                  Campos personalizados
+                                </Typography>
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  startIcon={fieldsState?.loading ? <CircularProgress size={14} /> : <SearchIcon />}
+                                  disabled={fieldsState?.loading || !settings.clickup_api_key.trim()}
+                                  onClick={() => void handleDiscoverListFields(list.id)}
+                                >
+                                  {fieldsState?.loading ? 'Descubriendo...' : 'Descubrir campos'}
+                                </Button>
+                              </Box>
+
+                              {fieldsState?.error ? (
+                                <Alert severity="error" sx={{ mb: 1 }}>{fieldsState.error}</Alert>
+                              ) : null}
+
+                              {list.custom_fields.length === 0 && !fieldsState?.discovered ? (
+                                <Typography variant="body2" color="text.secondary">
+                                  Descubre los campos de esta lista para que el agente sepa cómo rellenarlos.
+                                </Typography>
+                              ) : null}
+
+                              {list.custom_fields.length > 0 ? (
+                                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+                                  {list.custom_fields.map((field) => (
+                                    <Box key={field.field_id} sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                                      <Typography variant="caption" color="text.secondary">
+                                        {field.field_name}
+                                        <Box component="span" sx={{ ml: 1, opacity: 0.5 }}>
+                                          ({field.field_id.slice(0, 8)}...)
+                                        </Box>
+                                      </Typography>
+                                      <TextField
+                                        size="small"
+                                        value={field.description}
+                                        onChange={(e) =>
+                                          updateCustomFieldDescription(list.id, field.field_id, e.target.value)
+                                        }
+                                        fullWidth
+                                        placeholder={`Ej: Prioridad del bug. Valores posibles: P0 (crítico), P1 (alto), P2 (medio), P3 (bajo).`}
+                                        helperText="El agente usa esta descripción para saber qué valor poner en este campo."
+                                      />
+                                    </Box>
+                                  ))}
+                                </Box>
+                              ) : null}
+                            </Box>
+                          </Box>
+                        </AccordionDetails>
+                      </Accordion>
+                    );
+                  })}
+                </Box>
+              )}
+            </Box>
           </Box>
         </CardContent>
       </Card>
 
+      {/* OpenAI */}
       <Card sx={{ mb: 3 }}>
         <CardContent>
           <Typography variant="h6" gutterBottom>

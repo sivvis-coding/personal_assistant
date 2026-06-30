@@ -5,8 +5,10 @@ import httpx
 
 from app.core.errors import ExternalServiceError
 from app.schemas.discovery import (
+    ClickUpCustomField,
     ClickUpDiscoveryResponse,
     ClickUpList,
+    ClickUpListFieldsResponse,
     ClickUpTeam,
     FreshserviceAgent,
     FreshserviceDiscoveryResponse,
@@ -182,6 +184,46 @@ class DiscoveryService:
                 break
             page += 1
         return items
+
+    async def discover_clickup_list_fields(self, api_key: str, list_id: str) -> ClickUpListFieldsResponse:
+        """Return custom fields configured on a specific ClickUp list.
+
+        Parameters:
+            api_key: ClickUp API key.
+            list_id: ClickUp list identifier.
+
+        Returns:
+            List fields response.
+
+        Edge cases:
+            Lists with no custom fields return an empty fields array.
+        """
+        headers = {"Authorization": api_key}
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                response = await client.get(
+                    f"https://api.clickup.com/api/v2/list/{list_id}",
+                    headers=headers,
+                )
+                response.raise_for_status()
+                data = response.json()
+                fields = [
+                    ClickUpCustomField(
+                        id=str(f.get("id", "")),
+                        name=str(f.get("name", "")),
+                        type_=str(f.get("type", "")),
+                    )
+                    for f in data.get("custom_fields", [])
+                    if f.get("id") and f.get("name")
+                ]
+                return ClickUpListFieldsResponse(fields=fields)
+        except httpx.HTTPStatusError as error:
+            body = error.response.text
+            logger.error("ClickUp list fields discovery failed: %s - body: %s", error, body)
+            raise ExternalServiceError(f"ClickUp list fields discovery failed: {error} - {body}") from error
+        except httpx.HTTPError as error:
+            logger.error("ClickUp list fields discovery failed: %s", error)
+            raise ExternalServiceError(f"ClickUp list fields discovery failed: {error}") from error
 
     async def discover_freshservice(self, base_url: str, api_key: str) -> FreshserviceDiscoveryResponse:
         """List Freshservice agents available for the provided credentials.

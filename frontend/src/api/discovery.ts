@@ -1,6 +1,7 @@
 import { apiRequest } from './client';
 import type {
   ClickUpDiscoveryResponse,
+  ClickUpListFieldsResponse,
   FreshserviceDiscoveryResponse,
   FreshserviceWorkspacesResponse,
 } from '../types/discovery';
@@ -18,6 +19,23 @@ export function discoverClickUp(apiKey: string): Promise<ClickUpDiscoveryRespons
   return apiRequest<ClickUpDiscoveryResponse>('/settings/discover/clickup', {
     method: 'POST',
     body: JSON.stringify({ api_key: apiKey }),
+  });
+}
+
+/**
+ * Discover custom fields for a specific ClickUp list.
+ *
+ * Parameters:
+ *   apiKey: ClickUp API key.
+ *   listId: ClickUp list ID.
+ *
+ * Returns:
+ *   Fields response with discovered custom fields.
+ */
+export function discoverClickUpListFields(apiKey: string, listId: string): Promise<ClickUpListFieldsResponse> {
+  return apiRequest<ClickUpListFieldsResponse>('/settings/discover/clickup/fields', {
+    method: 'POST',
+    body: JSON.stringify({ api_key: apiKey, list_id: listId }),
   });
 }
 

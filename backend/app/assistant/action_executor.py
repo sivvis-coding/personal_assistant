@@ -219,8 +219,9 @@ class AssistantActionExecutor:
         user_story = prepare_result.data["user_story"]
 
         # Step 2: create ClickUp task
+        list_id = action.payload.get("list_id") or None
         approve_result: ToolResult = await self._ticket_to_clickup_tool.execute(
-            operation="approve", ticket_id=action.ticket_id, user_story=user_story
+            operation="approve", ticket_id=action.ticket_id, user_story=user_story, list_id=list_id
         )
         if not approve_result.success:
             return await self._action_repository.update_status(
