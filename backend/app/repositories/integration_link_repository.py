@@ -70,3 +70,33 @@ class IntegrationLinkRepository(BaseRepository):
             {"source_system": source_system, "source_id": str(source_id), "relation_type": relation_type}
         )
         return self.serialize(document)
+
+    async def find_all_by_relation_type(self, relation_type: str) -> list[dict[str, Any]]:
+        """Return all integration links matching a relation type.
+
+        Parameters:
+            relation_type: Relationship type to filter by.
+
+        Returns:
+            List of serialized link documents.
+
+        Edge cases:
+            Returns an empty list when no links exist.
+        """
+        cursor = self.collection.find({"relation_type": relation_type})
+        return [self.serialize(doc) async for doc in cursor if doc is not None]
+
+    async def update_link_status(self, link_id: str, new_status: str) -> None:
+        """Persist the latest observed ClickUp task status for a link.
+
+        Parameters:
+            link_id: MongoDB ObjectId string of the integration link.
+            new_status: New ClickUp task status string.
+
+        Returns:
+            None.
+
+        Edge cases:
+            Invalid link_id raises ValueError from bson ObjectId parsing.
+        """
+        await self.update_document(link_id, {"last_known_clickup_status": new_status})
