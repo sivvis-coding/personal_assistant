@@ -1,7 +1,9 @@
 import { apiRequest } from './client';
 import type {
+  ClickUpCustomField,
   ClickUpDiscoveryResponse,
   ClickUpListFieldsResponse,
+  ClickUpSuggestResponse,
   ClickUpTeamsResponse,
   FreshserviceDiscoveryResponse,
   FreshserviceWorkspacesResponse,
@@ -57,6 +59,26 @@ export function discoverClickUpListFields(apiKey: string, listId: string): Promi
   return apiRequest<ClickUpListFieldsResponse>('/settings/discover/clickup/fields', {
     method: 'POST',
     body: JSON.stringify({ api_key: apiKey, list_id: listId }),
+  });
+}
+
+/**
+ * Ask AI to suggest routing and field descriptions for a ClickUp list.
+ */
+export function suggestClickUpDescriptions(
+  apiKey: string,
+  listName: string,
+  existingDescription: string,
+  fields: ClickUpCustomField[],
+): Promise<ClickUpSuggestResponse> {
+  return apiRequest<ClickUpSuggestResponse>('/settings/suggest/clickup', {
+    method: 'POST',
+    body: JSON.stringify({
+      api_key: apiKey,
+      list_name: listName,
+      existing_description: existingDescription,
+      fields: fields.map((f) => ({ field_id: f.id, field_name: f.name, type_: f.type_ })),
+    }),
   });
 }
 

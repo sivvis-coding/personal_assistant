@@ -22,6 +22,7 @@ import RefreshIcon from '@mui/icons-material/Refresh';
 import SearchIcon from '@mui/icons-material/Search';
 import DeleteIcon from '@mui/icons-material/Delete';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh';
 import { getSettings, updateSettings } from '../api/settings';
 import {
   discoverClickUpListFields,
@@ -29,6 +30,7 @@ import {
   discoverClickUpTeams,
   discoverFreshservice,
   discoverFreshserviceWorkspaces,
+  suggestClickUpDescriptions,
 } from '../api/discovery';
 import type { AppSettings, ClickUpCustomFieldConfig, ClickUpListConfig } from '../types/settings';
 import type { ClickUpCustomField, ClickUpList, ClickUpTeam, FreshserviceAgent, FreshserviceWorkspace } from '../types/discovery';
@@ -58,6 +60,11 @@ interface ListFieldsState {
   fields: ClickUpCustomField[];
   error: string | null;
   discovered: boolean;
+}
+
+interface ListSuggestState {
+  loading: boolean;
+  error: string | null;
 }
 
 export function SettingsPage() {
@@ -90,6 +97,8 @@ export function SettingsPage() {
   });
   // Per-list field discovery state keyed by list ID
   const [listFieldsState, setListFieldsState] = useState<Record<string, ListFieldsState>>({});
+  // Per-list AI suggestion state keyed by list ID
+  const [listSuggestState, setListSuggestState] = useState<Record<string, ListSuggestState>>({});
 
   useEffect(() => {
     loadSettings();
@@ -254,6 +263,42 @@ export function SettingsPage() {
       setListFieldsState((prev) => ({
         ...prev,
         [listId]: { loading: false, fields: [], error: (caught as Error).message, discovered: false },
+      }));
+    }
+  }
+
+  async function handleSuggestDescriptions(listId: string): Promise<void> {
+    const list = settings.clickup_lists.find((l) => l.id === listId);
+    if (!list) return;
+    setListSuggestState((prev) => ({ ...prev, [listId]: { loading: true, error: null } }));
+    try {
+      const discoveredFields = listFieldsState[listId]?.fields ?? [];
+      const response = await suggestClickUpDescriptions(
+        settings.clickup_api_key,
+        list.name,
+        list.description,
+        discoveredFields,
+      );
+      updateField(
+        'clickup_lists',
+        settings.clickup_lists.map((l) => {
+          if (l.id !== listId) return l;
+          const updatedFields = l.custom_fields.map((f) => {
+            const suggestion = response.field_descriptions.find((s) => s.field_id === f.field_id);
+            return suggestion && suggestion.description ? { ...f, description: suggestion.description } : f;
+          });
+          return {
+            ...l,
+            description: response.routing_description || l.description,
+            custom_fields: updatedFields,
+          };
+        }),
+      );
+      setListSuggestState((prev) => ({ ...prev, [listId]: { loading: false, error: null } }));
+    } catch (caught) {
+      setListSuggestState((prev) => ({
+        ...prev,
+        [listId]: { loading: false, error: (caught as Error).message },
       }));
     }
   }
@@ -557,7 +602,30 @@ export function SettingsPage() {
                                 >
                                   {fieldsState?.loading ? 'Descubriendo...' : 'Descubrir campos'}
                                 </Button>
+                                <Tooltip title="Genera automáticamente la descripción de la lista y de sus campos usando IA">
+                                  <span>
+                                    <Button
+                                      size="small"
+                                      variant="outlined"
+                                      color="secondary"
+                                      startIcon={
+                                        listSuggestState[list.id]?.loading ? (
+                                          <CircularProgress size={14} />
+                                        ) : (
+                                          <AutoFixHighIcon fontSize="small" />
+                                        )
+                                      }
+                                      disabled={listSuggestState[list.id]?.loading}
+                                      onClick={() => void handleSuggestDescriptions(list.id)}
+                                    >
+                                      {listSuggestState[list.id]?.loading ? 'Generando...' : 'Sugerir con IA'}
+                                    </Button>
+                                  </span>
+                                </Tooltip>
                               </Box>
+                              {listSuggestState[list.id]?.error ? (
+                                <Alert severity="error" sx={{ mb: 1 }}>{listSuggestState[list.id].error}</Alert>
+                              ) : null}
 
                               {fieldsState?.error ? (
                                 <Alert severity="error" sx={{ mb: 1 }}>{fieldsState.error}</Alert>

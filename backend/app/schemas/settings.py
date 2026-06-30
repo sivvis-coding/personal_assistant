@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class ClickUpCustomFieldConfig(BaseModel):
@@ -68,3 +68,33 @@ class AppSettings(BaseModel):
     openai_model: str = "gpt-5.4"
 
     model_config = {"extra": "ignore"}
+
+
+class ClickUpFieldInput(BaseModel):
+    """A field to send to the suggestion endpoint."""
+
+    field_id: str
+    field_name: str
+    type_: str = ""
+
+
+class ClickUpSuggestRequest(BaseModel):
+    """Request body for AI-generated ClickUp descriptions."""
+
+    list_name: str
+    existing_description: str = ""
+    fields: list[ClickUpFieldInput] = []
+
+
+class ClickUpFieldSuggestion(BaseModel):
+    """AI-generated description for a single custom field."""
+
+    field_id: str
+    description: str
+
+
+class ClickUpSuggestResponse(BaseModel):
+    """AI-generated suggestions for a ClickUp list configuration."""
+
+    routing_description: str
+    field_descriptions: list[ClickUpFieldSuggestion] = []

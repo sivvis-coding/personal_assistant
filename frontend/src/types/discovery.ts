@@ -27,6 +27,16 @@ export interface ClickUpListFieldsResponse {
   fields: ClickUpCustomField[];
 }
 
+export interface ClickUpFieldSuggestion {
+  field_id: string;
+  description: string;
+}
+
+export interface ClickUpSuggestResponse {
+  routing_description: string;
+  field_descriptions: ClickUpFieldSuggestion[];
+}
+
 export interface FreshserviceAgent {
   id: string;
   name: string;
