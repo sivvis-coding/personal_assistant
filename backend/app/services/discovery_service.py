@@ -263,7 +263,7 @@ class DiscoveryService:
         try:
             async with httpx.AsyncClient(timeout=20) as client:
                 response = await client.get(
-                    f"https://api.clickup.com/api/v2/list/{list_id}",
+                    f"https://api.clickup.com/api/v2/list/{list_id}/field",
                     headers=headers,
                 )
                 response.raise_for_status()
@@ -274,7 +274,7 @@ class DiscoveryService:
                         name=str(f.get("name", "")),
                         type_=str(f.get("type", "")),
                     )
-                    for f in data.get("custom_fields", [])
+                    for f in data.get("fields", [])
                     if f.get("id") and f.get("name")
                 ]
                 return ClickUpListFieldsResponse(fields=fields)
