@@ -10,6 +10,8 @@ from app.tools.freshservice.schemas import (
     GetTicketInput,
     ListTicketsInput,
     ReplyTicketInput,
+    RequestInfoTicketInput,
+    ResolveTicketInput,
     SearchTicketsInput,
     TicketDetailResult,
     TicketListResult,
@@ -64,6 +66,25 @@ class FreshserviceAdapter:
         directly.
         """
         return await self._client.add_reply(input_data.ticket_id, input_data.body)
+
+    async def resolve_ticket(self, input_data: ResolveTicketInput) -> dict[str, object]:
+        """Change a Freshservice ticket status to resolved or closed.
+
+        SAFETY: This mutates ticket state visible to the customer.
+        Must only be called after an approved resolve_freshservice_ticket action.
+        """
+        status_int = 4 if input_data.status == "resolved" else 5
+        return await self._client.resolve_ticket(input_data.ticket_id, status=status_int)
+
+    async def request_info_ticket(self, input_data: RequestInfoTicketInput) -> dict[str, object]:
+        """Send a public reply asking for more information and set ticket to waiting-on-third-party (status 7).
+
+        SAFETY: Sends a PUBLIC reply and mutates ticket state.
+        Must only be called after an approved request_info_freshservice_ticket action.
+        """
+        reply_result = await self._client.add_reply(input_data.ticket_id, input_data.body)
+        status_result = await self._client.resolve_ticket(input_data.ticket_id, status=7)
+        return {"reply": reply_result, "status_update": status_result}
 
     async def search_tickets(self, input_data: SearchTicketsInput) -> TicketListResult:
         """Search tickets by keyword.

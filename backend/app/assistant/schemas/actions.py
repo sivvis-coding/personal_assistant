@@ -2,7 +2,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-AssistantActionType = Literal["prepare_clickup_task", "approve_clickup_task", "save_time_entry", "reply_freshservice_ticket"]
+AssistantActionType = Literal["prepare_clickup_task", "approve_clickup_task", "save_time_entry", "reply_freshservice_ticket", "resolve_freshservice_ticket", "request_info_freshservice_ticket", "send_ticket_to_backlog"]
 AssistantActionStatus = Literal["proposed", "approved", "rejected", "completed", "failed"]
 
 

@@ -4,7 +4,7 @@ from app.repositories.assistant_action_repository import AssistantActionReposito
 from app.tools.base import ToolResult
 from app.tools.clickup_time.tool import ClickUpTimeTool
 from app.tools.freshservice.adapter import FreshserviceAdapter
-from app.tools.freshservice.schemas import ReplyTicketInput
+from app.tools.freshservice.schemas import ReplyTicketInput, RequestInfoTicketInput, ResolveTicketInput
 from app.tools.ticket_to_clickup.tool import TicketToClickUpTool
 
 
@@ -79,6 +79,12 @@ class AssistantActionExecutor:
             return await self._save_time_entry(action)
         if action.action_type == "reply_freshservice_ticket":
             return await self._reply_freshservice_ticket(action)
+        if action.action_type == "resolve_freshservice_ticket":
+            return await self._resolve_freshservice_ticket(action)
+        if action.action_type == "request_info_freshservice_ticket":
+            return await self._request_info_freshservice_ticket(action)
+        if action.action_type == "send_ticket_to_backlog":
+            return await self._send_ticket_to_backlog(action)
         raise ValueError(f"Unsupported assistant action type: {action.action_type}")
 
     async def reject(self, action_id: str) -> AssistantAction:
@@ -184,6 +190,116 @@ class AssistantActionExecutor:
             )
         message = tool_result.data.get("message") if isinstance(tool_result.data, dict) else str(tool_result.data)
         return await self._action_repository.update_status(action.id, "completed", result={"message": message})
+
+    async def _send_ticket_to_backlog(self, action: AssistantAction) -> AssistantAction:
+        """Generate user story, create ClickUp task, and reply to the ticket with the task link.
+
+        Parameters:
+            action: Approved send_ticket_to_backlog action. Optional 'body' in payload
+                    is used as the reply prefix; the ClickUp URL is always appended.
+
+        Returns:
+            Completed action with the ClickUp task URL and reply result.
+
+        Edge cases:
+            If a ClickUp task already exists for the ticket the existing link is reused.
+            The reply is only sent when the ClickUp task step succeeds.
+        """
+        assert action.ticket_id is not None
+
+        # Step 1: generate user story
+        prepare_result: ToolResult = await self._ticket_to_clickup_tool.execute(
+            operation="prepare", ticket_id=action.ticket_id
+        )
+        if not prepare_result.success:
+            return await self._action_repository.update_status(
+                action.id, "failed", result={"message": prepare_result.message, "error": True}
+            )
+
+        user_story = prepare_result.data["user_story"]
+
+        # Step 2: create ClickUp task
+        approve_result: ToolResult = await self._ticket_to_clickup_tool.execute(
+            operation="approve", ticket_id=action.ticket_id, user_story=user_story
+        )
+        if not approve_result.success:
+            return await self._action_repository.update_status(
+                action.id, "failed", result={"message": approve_result.message, "error": True}
+            )
+
+        clickup_task = approve_result.data.get("clickup_task", {})
+        task_url = clickup_task.get("url") or ""
+
+        # Step 3: reply to ticket with the task link
+        body_prefix = str(action.payload.get("body", "")).strip()
+        if task_url:
+            reply_body = f"{body_prefix}\n\nTarea en ClickUp: {task_url}" if body_prefix else f"Tarea en ClickUp: {task_url}"
+        else:
+            reply_body = body_prefix or "La tarea ha sido creada en el backlog de ClickUp."
+
+        try:
+            reply_result = await self._freshservice_adapter.reply_ticket(
+                ReplyTicketInput(ticket_id=action.ticket_id, body=reply_body)
+            )
+        except Exception as exc:  # noqa: BLE001
+            return await self._action_repository.update_status(
+                action.id, "failed", result={"message": f"ClickUp task created but reply failed: {exc}", "error": True}
+            )
+
+        return await self._action_repository.update_status(
+            action.id,
+            "completed",
+            result={"clickup_task": clickup_task, "reply": reply_result},
+        )
+
+    async def _resolve_freshservice_ticket(self, action: AssistantAction) -> AssistantAction:
+        """Resolve or close a Freshservice ticket after explicit approval.
+
+        Parameters:
+            action: Approved resolve_freshservice_ticket action.
+
+        Returns:
+            Completed action with the Fresh API response.
+
+        Edge cases:
+            Safety policy enforces ticket_id presence before this is called.
+        """
+        assert action.ticket_id is not None
+        status = str(action.payload.get("status", "resolved"))
+        try:
+            response = await self._freshservice_adapter.resolve_ticket(
+                ResolveTicketInput(ticket_id=action.ticket_id, status=status)  # type: ignore[arg-type]
+            )
+        except Exception as exc:  # noqa: BLE001
+            return await self._action_repository.update_status(
+                action.id, "failed", result={"message": str(exc), "error": True}
+            )
+        return await self._action_repository.update_status(
+            action.id, "completed", result={"response": response}
+        )
+
+    async def _request_info_freshservice_ticket(self, action: AssistantAction) -> AssistantAction:
+        """Reply asking for more information and set ticket to waiting-on-third-party.
+
+        Parameters:
+            action: Approved request_info_freshservice_ticket action with a 'body' payload.
+
+        Returns:
+            Completed action. The ticket status becomes 7 (waiting on third party).
+        """
+        assert action.ticket_id is not None
+        body = str(action.payload["body"])
+        try:
+            response = await self._freshservice_adapter.request_info_ticket(
+                RequestInfoTicketInput(ticket_id=action.ticket_id, body=body)
+            )
+        except Exception as exc:  # noqa: BLE001
+            return await self._action_repository.update_status(
+                action.id, "failed", result={"message": str(exc), "error": True}
+            )
+        return await self._action_repository.update_status(
+            action.id, "completed", result={"response": response}
+        )
 
     async def _reply_freshservice_ticket(self, action: AssistantAction) -> AssistantAction:
         """Send an approved public reply to a Freshservice ticket.

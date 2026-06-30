@@ -37,6 +37,22 @@ class ReplyTicketInput:
 
 
 @dataclass(frozen=True)
+class ResolveTicketInput:
+    """Input for resolve_ticket operation."""
+
+    ticket_id: str
+    status: Literal["resolved", "closed"] = "resolved"
+
+
+@dataclass(frozen=True)
+class RequestInfoTicketInput:
+    """Input for request_info_ticket: reply + set waiting-on-third-party."""
+
+    ticket_id: str
+    body: str
+
+
+@dataclass(frozen=True)
 class SearchTicketsInput:
     """Input for search_tickets operation."""
 

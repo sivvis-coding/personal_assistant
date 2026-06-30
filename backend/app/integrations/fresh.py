@@ -313,6 +313,34 @@ class FreshClient:
         except httpx.HTTPError as error:
             raise ExternalServiceError(f"Fresh add reply failed: {error}") from error
 
+    async def resolve_ticket(self, ticket_id: str, status: int = 4) -> dict[str, Any]:
+        """Update a Fresh ticket status (4 = resolved, 5 = closed).
+
+        Parameters:
+            ticket_id: Fresh ticket identifier.
+            status: Target Fresh status integer. Defaults to 4 (resolved).
+
+        Returns:
+            Fresh API response payload.
+
+        Edge cases:
+            IMPORTANT: This changes ticket state visible to the customer.
+            Must only be called after an AssistantAction approved through HITL.
+        """
+        if not self._settings.has_fresh_credentials:
+            return {"mock": True, "ticket_id": str(ticket_id), "status": status}
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                response = await client.put(
+                    f"{self._settings.fresh_base_url.rstrip('/')}/api/v2/tickets/{ticket_id}",
+                    auth=(self._settings.fresh_api_key, "X"),
+                    json={"status": status},
+                )
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPError as error:
+            raise ExternalServiceError(f"Fresh resolve ticket failed: {error}") from error
+
     @staticmethod
     def mock_conversations(ticket_id: str) -> list[TicketConversation]:
         """Return exactly three deterministic mock conversation entries.
@@ -422,8 +450,18 @@ class FreshClient:
         """
         if not isinstance(html, str):
             return ""
-        text = re.sub(r"<[^>]+>", " ", html)
-        return " ".join(text.split())
+        # Block-level tags → newline so paragraph structure survives
+        text = re.sub(r"<br\s*/?>", "\n", html, flags=re.IGNORECASE)
+        text = re.sub(r"</?(p|div|li|h[1-6]|blockquote|tr)[^>]*>", "\n", text, flags=re.IGNORECASE)
+        # Strip remaining inline tags
+        text = re.sub(r"<[^>]+>", "", text)
+        # Decode common HTML entities
+        for entity, char in (("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"), ("&nbsp;", " "), ("&quot;", '"'), ("&#39;", "'")):
+            text = text.replace(entity, char)
+        # Trim each line, collapse 3+ blank lines to a single blank line
+        lines = [line.strip() for line in text.split("\n")]
+        text = re.sub(r"\n{3,}", "\n\n", "\n".join(lines))
+        return text.strip()
 
     @staticmethod
     def _normalize_conversation(payload: dict[str, Any]) -> TicketConversation:
@@ -543,7 +581,7 @@ class FreshClient:
             status=self._normalize_status(payload.get("status")),
             priority=self._normalize_priority(payload.get("priority")),
             requester=requester,
-            description=payload.get("description_text") or payload.get("description"),
+            description=payload.get("description_text") or FreshClient._strip_html(payload.get("description") or ""),
             url=self._ticket_url(ticket_id),
             raw=payload,
         )

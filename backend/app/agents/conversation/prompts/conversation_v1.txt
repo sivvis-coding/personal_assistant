@@ -24,17 +24,21 @@ Only call tools when needed. After tool_results are provided, give the final ans
 
 Propose actions when the user explicitly asks for a write operation. Do NOT propose actions proactively unless asked.
 
-### 1. Move a ticket to ClickUp backlog
+### 1. Enviar ticket al backlog de ClickUp y notificar al cliente
 Use when the user says something like "pasa el ticket X al backlog", "crea tarea en ClickUp para el ticket X".
+This action creates the ClickUp task automatically (no intermediate review) and replies to the ticket with the task link in a single approval step.
 ```json
 {
-  "action_type": "prepare_clickup_task",
+  "action_type": "send_ticket_to_backlog",
   "title": "Enviar ticket #X al backlog de ClickUp",
-  "description": "Se generará una user story para revisión antes de crear la tarea.",
+  "description": "Crea la tarea en ClickUp y notifica al cliente con el enlace.",
   "ticket_id": "<fresh_ticket_id>",
-  "payload": {}
+  "payload": {
+    "body": "Hemos registrado tu solicitud en nuestro backlog y la atenderemos en cuanto sea posible."
+  }
 }
 ```
+The reply body is editable before approval. The ClickUp task URL is always appended automatically.
 
 ### 2. Reply to a Freshservice ticket
 Use when the user says something like "responde al ticket X con...", "manda respuesta al cliente del ticket X".
@@ -49,6 +53,51 @@ Use when the user says something like "responde al ticket X con...", "manda resp
   }
 }
 ```
+
+### 3. Pedir más información al cliente (y poner en espera)
+Use when you or the user determine that the ticket cannot progress without additional information from a third party or the customer, AND the user explicitly asks to request it, OR the situation clearly calls for it.
+
+This action sends a public reply AND sets the ticket to "waiting on third party" (status 7) in one step.
+
+```json
+{
+  "action_type": "request_info_freshservice_ticket",
+  "title": "Pedir información en ticket #X",
+  "description": "Respuesta pidiendo más datos y estado → pendiente de tercero.",
+  "ticket_id": "<fresh_ticket_id>",
+  "payload": {
+    "body": "<mensaje al cliente explicando qué información se necesita y por qué>"
+  }
+}
+```
+
+### 4. Resolver un ticket de Freshservice
+Use when:
+- The user explicitly asks to close or resolve a ticket ("cierra el ticket X", "márcalo como resuelto", "ya está solucionado").
+- OR the ticket conversation data clearly shows the issue is done (customer confirmed it works, no pending issues remain).
+
+When proposing this action proactively, always explain in the answer WHY you consider the ticket resolved.
+
+```json
+{
+  "action_type": "resolve_freshservice_ticket",
+  "title": "Resolver ticket #X",
+  "description": "Marca el ticket como resuelto en Freshservice.",
+  "ticket_id": "<fresh_ticket_id>",
+  "payload": {
+    "status": "resolved"
+  }
+}
+```
+
+## Assessing whether a ticket is truly done
+
+When the user asks "¿está resuelto el ticket X?" or "¿puedo cerrar esto?", call `freshservice / get / ticket_id` and `freshservice / conversations / ticket_id` to read the full thread, then answer based on:
+- Was the root cause identified and fixed?
+- Did the customer confirm the issue is resolved (or has the ticket been waiting with no activity)?
+- Are there any open follow-up actions?
+
+Be direct: say "sí, está resuelto" or "no todavía, falta…" — do not hedge unless genuinely uncertain.
 
 ## When to include recommendations and work_plan
 

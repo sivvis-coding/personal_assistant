@@ -37,6 +37,14 @@ class AssistantSafetyPolicy:
             self._ensure_save_time_entry_payload(action.payload)
         if action.action_type == "reply_freshservice_ticket":
             self._ensure_reply_freshservice_ticket_payload(action.ticket_id, action.payload)
+        if action.action_type == "resolve_freshservice_ticket":
+            if not action.ticket_id:
+                raise ValueError("resolve_freshservice_ticket requires a ticket_id.")
+        if action.action_type == "request_info_freshservice_ticket":
+            self._ensure_request_info_payload(action.ticket_id, action.payload)
+        if action.action_type == "send_ticket_to_backlog":
+            if not action.ticket_id:
+                raise ValueError("send_ticket_to_backlog requires a ticket_id.")
 
     def _ensure_reply_freshservice_ticket_payload(self, ticket_id: str | None, payload: dict) -> None:
         """Validate the payload for a reply_freshservice_ticket action.
@@ -57,6 +65,13 @@ class AssistantSafetyPolicy:
         body = payload.get("body")
         if not body or not str(body).strip():
             raise ValueError("reply_freshservice_ticket payload requires a non-empty 'body'.")
+
+    def _ensure_request_info_payload(self, ticket_id: str | None, payload: dict) -> None:
+        if not ticket_id:
+            raise ValueError("request_info_freshservice_ticket requires a ticket_id.")
+        body = payload.get("body")
+        if not body or not str(body).strip():
+            raise ValueError("request_info_freshservice_ticket payload requires a non-empty 'body'.")
 
     def _ensure_save_time_entry_payload(self, payload: dict) -> None:
         """Validate the payload for a save_time_entry action.
