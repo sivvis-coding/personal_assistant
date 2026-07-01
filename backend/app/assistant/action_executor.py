@@ -125,20 +125,23 @@ class AssistantActionExecutor:
                 action.id, "failed", result={"message": tool_result.message, "error": True}
             )
         prepared = tool_result.data
+        follow_up_payload: dict = {"user_story": prepared["user_story"]}
+        if action.payload.get("list_id"):
+            follow_up_payload["list_id"] = action.payload["list_id"]
         follow_up = await self._action_repository.create_action(
             AssistantActionCreate(
                 action_type="approve_clickup_task",
                 title=f"Crear tarea ClickUp para ticket {action.ticket_id}",
                 description="Revisa la user story generada antes de crear la tarea externa.",
                 ticket_id=action.ticket_id,
-                payload={"user_story": prepared["user_story"]},
+                payload=follow_up_payload,
             )
         )
         result = {"prepared": prepared, "next_action_id": follow_up.id}
         return await self._action_repository.update_status(action.id, "completed", result=result)
 
     async def _approve_clickup_task(self, action: AssistantAction) -> AssistantAction:
-        """Create the ClickUp task after explicit second approval.
+        """Create the ClickUp task after explicit second approval and reply to the ticket.
 
         Parameters:
             action: Approved final creation action.
@@ -148,19 +151,41 @@ class AssistantActionExecutor:
 
         Edge cases:
             User story payload must come from the prepare step.
+            Reply failure is stored but does not mark the action as failed — the task was created.
         """
         assert action.ticket_id is not None
         user_story = action.payload.get("user_story")
+        list_id = action.payload.get("list_id") or None
         tool_result: ToolResult = await self._ticket_to_clickup_tool.execute(
             operation="approve",
             ticket_id=action.ticket_id,
             user_story=user_story,
+            list_id=list_id,
         )
         if not tool_result.success:
             return await self._action_repository.update_status(
                 action.id, "failed", result={"message": tool_result.message, "error": True}
             )
-        return await self._action_repository.update_status(action.id, "completed", result=tool_result.data)
+
+        clickup_task = (tool_result.data or {}).get("clickup_task", {})
+        task_url = clickup_task.get("url") or ""
+        reply_result: dict = {}
+        if task_url:
+            try:
+                reply_result = await self._freshservice_adapter.reply_ticket(
+                    ReplyTicketInput(
+                        ticket_id=action.ticket_id,
+                        body=f"Tarea en ClickUp: {task_url}",
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                reply_result = {"error": str(exc)}
+
+        return await self._action_repository.update_status(
+            action.id,
+            "completed",
+            result={**(tool_result.data or {}), "reply": reply_result},
+        )
 
     async def _save_time_entry(self, action: AssistantAction) -> AssistantAction:
         """Create a ClickUp task and register a time entry after approval.

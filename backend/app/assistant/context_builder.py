@@ -1,4 +1,5 @@
 from app.assistant.schemas.context import AssistantContext
+from app.domain.integration_link.value_objects import RelationType
 from app.repositories.integration_link_repository import IntegrationLinkRepository
 from app.services.clickup_service import ClickUpService
 from app.services.settings_service import SettingsService
@@ -50,7 +51,7 @@ class AssistantContextBuilder:
         week_time = await self._clickup_service.get_week_time_entries()
         existing_backlog_ticket_ids: list[str] = []
         for ticket in ticket_list.items:
-            link = await self._integration_link_repository.find_link("fresh", ticket.id, "clickup_task")
+            link = await self._integration_link_repository.find_link("fresh", ticket.id, RelationType.TICKET_TO_TASK)
             if link is not None:
                 existing_backlog_ticket_ids.append(ticket.id)
 

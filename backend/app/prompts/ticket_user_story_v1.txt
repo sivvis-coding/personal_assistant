@@ -3,12 +3,13 @@ Convert the ticket into a ClickUp-ready user story as JSON with exactly these ke
 title, description, acceptance_criteria_in_gerkin, constraints, user_story_statement, out_of_scope, requested_by, functional_description.
 
 Rules:
+- ALL values must be plain strings. NEVER use arrays or lists for any field.
 - title must be short and task-friendly.
 - description must summarize customer context and expected outcome.
-- acceptance_criteria_in_gerkin must use Given/When/Then scenarios.
-- constraints must include technical notes, dependencies, risks, or unknowns.
+- acceptance_criteria_in_gerkin must use Given/When/Then scenarios as a single multiline string.
+- constraints must include technical notes, dependencies, risks, or unknowns as a single string (use newlines to separate points).
 - user_story_statement must follow: "As a [user], I want [goal], so that [benefit]."
-- out_of_scope must state what is not included. Use "Not specified" when unknown.
+- out_of_scope must state what is not included as a single string. Use "Not specified" when unknown.
 - requested_by must use requester data when available.
-- functional_description must describe expected behavior clearly.
+- functional_description must describe expected behavior clearly as a single string.
 - Never invent facts not present in the ticket. Mark unknowns explicitly.

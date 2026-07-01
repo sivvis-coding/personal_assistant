@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 DraftType = Literal["summary", "reply", "user_story"]
@@ -80,6 +80,19 @@ class UserStory(BaseModel):
     out_of_scope: str
     requested_by: str
     functional_description: str
+
+    @field_validator(
+        "constraints", "out_of_scope", "acceptance_criteria_in_gerkin",
+        "user_story_statement", "functional_description", "description",
+        "title", "requested_by",
+        mode="before",
+    )
+    @classmethod
+    def coerce_list_to_str(cls, v: object) -> str:
+        """Coerce list values to newline-joined strings."""
+        if isinstance(v, list):
+            return "\n".join(str(item) for item in v)
+        return str(v) if not isinstance(v, str) else v
 
     def to_markdown(self) -> str:
         """Convert user story to a readable Markdown description.

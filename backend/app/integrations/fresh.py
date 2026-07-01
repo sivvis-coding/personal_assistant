@@ -236,7 +236,8 @@ class FreshClient:
         try:
             async with httpx.AsyncClient(timeout=20) as client:
                 url = f"{self._settings.fresh_base_url.rstrip('/')}/api/v2/tickets/{ticket_id}"
-                params = self._fresh_params({"include": "requester"})
+                # workspace_id is NOT supported by the single-ticket endpoint.
+                params = {"include": "requester"}
                 logger.info("Fresh get ticket request: %s params=%s", url, params)
                 response = await client.get(
                     url,
@@ -244,7 +245,10 @@ class FreshClient:
                     params=params,
                 )
                 response.raise_for_status()
-                return self._normalize_ticket(response.json()), "fresh"
+                payload = response.json()
+                # Single-ticket endpoint wraps the object under {"ticket": {...}}.
+                ticket_data = payload.get("ticket", payload)
+                return self._normalize_ticket(ticket_data), "fresh"
         except httpx.HTTPStatusError as error:
             body = error.response.text
             logger.error("Fresh get ticket failed: %s - body: %s", error, body)
