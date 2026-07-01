@@ -448,6 +448,85 @@ class FreshClient:
         except httpx.HTTPError as error:
             raise ExternalServiceError(f"Fresh resolve ticket failed: {error}") from error
 
+    async def set_clickup_url(self, ticket_id: str, clickup_url: str) -> dict[str, Any]:
+        """Write the ClickUp task URL into the clickup_url custom field of a ticket.
+
+        Uses the same fetch-preserve-PUT pattern as resolve_ticket so that
+        mandatory Freshservice custom fields are not cleared by the update.
+
+        Parameters:
+            ticket_id: Fresh ticket identifier.
+            clickup_url: ClickUp task URL to store.
+
+        Returns:
+            Fresh API response payload or mock dict.
+
+        Edge cases:
+            Fails silently in mock mode so callers do not need to branch.
+            Uses the same retry-with-placeholder logic as resolve_ticket.
+        """
+        if not self._settings.has_fresh_credentials:
+            return {"mock": True, "ticket_id": str(ticket_id), "clickup_url": clickup_url}
+
+        base_url = self._settings.fresh_base_url.rstrip("/")
+        auth = (self._settings.fresh_api_key, "X")
+
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                get_resp = await client.get(
+                    f"{base_url}/api/v2/tickets/{ticket_id}",
+                    auth=auth,
+                    params={"include": "requester"},
+                )
+                get_resp.raise_for_status()
+                raw = get_resp.json()
+                ticket_data = raw.get("ticket", raw)
+
+                existing_custom = ticket_data.get("custom_fields") or {}
+                populated_custom = {k: v for k, v in existing_custom.items() if v is not None and v != ""}
+                populated_custom["clickup_url"] = clickup_url
+
+                payload: dict[str, Any] = {"custom_fields": populated_custom}
+                description = (ticket_data.get("description") or "").strip()
+                if description:
+                    payload["description"] = description
+
+                response = await client.put(
+                    f"{base_url}/api/v2/tickets/{ticket_id}",
+                    auth=auth,
+                    json=payload,
+                )
+
+                if response.status_code == 400:
+                    errors = _parse_validation_errors(response.text)
+                    string_blank_fields = [e["field"] for e in errors if _is_string_blank_error(e)]
+                    if string_blank_fields:
+                        retry_custom = dict(populated_custom)
+                        for field in string_blank_fields:
+                            if field != "clickup_url" and field != "description":
+                                retry_custom[field] = "-"
+                        retry_payload: dict[str, Any] = {"custom_fields": retry_custom}
+                        if description:
+                            retry_payload["description"] = description
+                        elif "description" in string_blank_fields:
+                            retry_payload["description"] = "-"
+                        response = await client.put(
+                            f"{base_url}/api/v2/tickets/{ticket_id}",
+                            auth=auth,
+                            json=retry_payload,
+                        )
+
+                if not response.is_success:
+                    logger.warning(
+                        "set_clickup_url %s failed %s: %s",
+                        ticket_id, response.status_code, response.text,
+                    )
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPError as error:
+            logger.warning("set_clickup_url %s failed: %s", ticket_id, error)
+            raise ExternalServiceError(f"Fresh set_clickup_url failed: {error}") from error
+
     @staticmethod
     def mock_conversations(ticket_id: str) -> list[TicketConversation]:
         """Return exactly three deterministic mock conversation entries.
@@ -682,6 +761,8 @@ class FreshClient:
         """
         requester = self._extract_requester(payload)
         ticket_id = str(payload.get("id"))
+        custom_fields = payload.get("custom_fields") or {}
+        clickup_url = custom_fields.get("clickup_url") or None
         return Ticket(
             id=ticket_id,
             subject=str(payload.get("subject") or "Untitled ticket"),
@@ -690,6 +771,7 @@ class FreshClient:
             requester=requester,
             description=payload.get("description_text") or FreshClient._strip_html(payload.get("description") or ""),
             url=self._ticket_url(ticket_id),
+            clickup_url=str(clickup_url) if clickup_url else None,
             raw=payload,
         )
 

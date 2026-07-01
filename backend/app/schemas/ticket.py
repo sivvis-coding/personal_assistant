@@ -136,6 +136,7 @@ class Ticket(BaseModel):
     requester: TicketRequester
     description: str | None = None
     url: str | None = None
+    clickup_url: str | None = None
     raw: dict[str, Any]
     sla: SlaHint | None = None
     overdue: bool = False

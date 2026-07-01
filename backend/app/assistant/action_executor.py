@@ -180,6 +180,10 @@ class AssistantActionExecutor:
                 )
             except Exception as exc:  # noqa: BLE001
                 reply_result = {"error": str(exc)}
+            try:
+                await self._freshservice_adapter.set_clickup_url(action.ticket_id, task_url)
+            except Exception as exc:  # noqa: BLE001
+                reply_result["clickup_url_update_error"] = str(exc)
 
         return await self._action_repository.update_status(
             action.id,
@@ -271,6 +275,13 @@ class AssistantActionExecutor:
             return await self._action_repository.update_status(
                 action.id, "failed", result={"message": f"ClickUp task created but reply failed: {exc}", "error": True}
             )
+
+        # Step 4: persist ClickUp URL to Freshservice custom field
+        if task_url:
+            try:
+                await self._freshservice_adapter.set_clickup_url(action.ticket_id, task_url)
+            except Exception:  # noqa: BLE001
+                pass  # non-fatal — task and reply already succeeded
 
         return await self._action_repository.update_status(
             action.id,

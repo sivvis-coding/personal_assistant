@@ -20,6 +20,7 @@ import {
   TableRow,
   TableSortLabel,
   TextField,
+  Tooltip,
   Typography,
 } from '@mui/material';
 import FilterListIcon from '@mui/icons-material/FilterList';
@@ -390,18 +391,37 @@ export function TicketsPage() {
                       ) : null}
                     </TableCell>
                     <TableCell align="right">
-                      {ticket.url ? (
-                        <IconButton
-                          size="small"
-                          component="a"
-                          href={ticket.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={(event) => event.stopPropagation()}
-                        >
-                          <OpenInNewIcon fontSize="small" />
-                        </IconButton>
-                      ) : null}
+                      <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 0.5 }}>
+                        {ticket.clickup_url ? (
+                          <Tooltip title="Ver en ClickUp">
+                            <IconButton
+                              size="small"
+                              component="a"
+                              href={ticket.clickup_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(event) => event.stopPropagation()}
+                              color="secondary"
+                            >
+                              <OpenInNewIcon fontSize="small" />
+                            </IconButton>
+                          </Tooltip>
+                        ) : null}
+                        {ticket.url ? (
+                          <Tooltip title="Abrir en Freshservice">
+                            <IconButton
+                              size="small"
+                              component="a"
+                              href={ticket.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(event) => event.stopPropagation()}
+                            >
+                              <OpenInNewIcon fontSize="small" />
+                            </IconButton>
+                          </Tooltip>
+                        ) : null}
+                      </Box>
                     </TableCell>
                   </TableRow>
                 ))

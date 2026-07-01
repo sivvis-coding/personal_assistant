@@ -32,6 +32,7 @@ export interface Ticket {
   requester: TicketRequester;
   description?: string | null;
   url?: string | null;
+  clickup_url?: string | null;
   raw: Record<string, unknown>;
   sla?: SlaHint | null;
   overdue?: boolean;

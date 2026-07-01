@@ -119,6 +119,18 @@ export function TicketDetailPage() {
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
         <Typography variant="h4">Ticket {ticket.id}</Typography>
         <Box sx={{ display: 'flex', gap: 1 }}>
+          {ticket.clickup_url ? (
+            <Button
+              variant="outlined"
+              color="secondary"
+              startIcon={<OpenInNewIcon />}
+              href={ticket.clickup_url}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Ver en ClickUp
+            </Button>
+          ) : null}
           {ticket.url ? (
             <Button
               variant="outlined"

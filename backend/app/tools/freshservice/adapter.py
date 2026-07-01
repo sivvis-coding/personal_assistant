@@ -86,6 +86,14 @@ class FreshserviceAdapter:
         status_result = await self._client.resolve_ticket(input_data.ticket_id, status=7)
         return {"reply": reply_result, "status_update": status_result}
 
+    async def set_clickup_url(self, ticket_id: str, clickup_url: str) -> dict[str, object]:
+        """Write the ClickUp task URL into the clickup_url custom field of a ticket.
+
+        SAFETY: Mutates a Freshservice ticket custom field.
+        May only be called after a ClickUp task has been successfully created.
+        """
+        return await self._client.set_clickup_url(ticket_id, clickup_url)
+
     async def search_tickets(self, input_data: SearchTicketsInput) -> TicketListResult:
         """Search tickets by keyword.
 

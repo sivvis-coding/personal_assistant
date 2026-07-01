@@ -64,7 +64,9 @@ function formatDate(iso: string): string {
 }
 
 function defaultReplyDraft(item: LinkedTaskItem): string {
-  return `Hemos completado la tarea relacionada con tu solicitud "${item.ticket_subject || `#${item.ticket_id}`}".
+  const taskUrl = item.clickup_task_url ?? '';
+  const taskLine = taskUrl ? `\n\nPuedes consultar el seguimiento de la tarea aquí: ${taskUrl}` : '';
+  return `Hemos completado la tarea relacionada con tu solicitud "${item.ticket_subject || `#${item.ticket_id}`}".${taskLine}
 
 El problema ha sido resuelto. Si tienes alguna duda adicional, no dudes en contactarnos.
 
