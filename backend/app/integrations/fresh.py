@@ -57,29 +57,42 @@ def mock_ticket(ticket_id: str = "1001") -> Ticket:
     )
 
 
-def _raise_validation_error(body: str, ticket_id: str) -> None:
-    """Parse a Freshservice 400 validation response and raise a descriptive error.
+def _parse_validation_errors(body: str) -> list[dict[str, str]]:
+    """Parse Freshservice 400 validation error body into a list of error dicts.
 
     Parameters:
         body: Raw JSON response body from Freshservice.
-        ticket_id: Ticket ID for context in the error message.
 
     Returns:
-        None — always raises ExternalServiceError.
+        List of error dicts with "field", "message", and "code" keys.
+        Empty list when body is not valid JSON or has no errors.
     """
     import json as _json  # noqa: PLC0415
     try:
         data = _json.loads(body)
-        errors = data.get("errors", [])
-        if errors:
-            fields = ", ".join(e["field"] for e in errors)
-            raise ExternalServiceError(
-                f"El ticket #{ticket_id} tiene campos obligatorios vacíos que impiden cerrarlo: {fields}. "
-                "Por favor, rellena esos campos en Freshservice y vuelve a intentarlo."
-            )
+        return data.get("errors", [])
     except (ValueError, KeyError):
-        pass
-    raise ExternalServiceError(f"Fresh resolve ticket #{ticket_id} falló con error de validación: {body}")
+        return []
+
+
+def _is_string_blank_error(error: dict[str, str]) -> bool:
+    """Return True when the error indicates a mandatory string field is blank or missing.
+
+    Freshservice uses two codes for this pattern:
+    - missing_field: field is absent or null, message says "should be of type String"
+    - invalid_value: field is present but blank, message says "should not be blank"
+
+    Parameters:
+        error: Single error dict from _parse_validation_errors.
+
+    Returns:
+        True when a "-" placeholder would satisfy the constraint.
+    """
+    msg = error.get("message", "").lower()
+    code = error.get("code", "")
+    return code == "missing_field" and "string" in msg or (
+        code == "invalid_value" and "not be blank" in msg
+    )
 
 
 class FreshClient:
@@ -345,10 +358,12 @@ class FreshClient:
     async def resolve_ticket(self, ticket_id: str, status: int = 4) -> dict[str, Any]:
         """Update a Fresh ticket status (4 = resolved, 5 = closed).
 
-        Fetches the ticket first so all mandatory fields are preserved in the
-        PUT body.  Freshservice validates all fields on PUT — sending only
-        {status} causes 400 when the ticket has blank/null mandatory fields.
-        Null custom fields are converted to "" so they pass type validation.
+        Freshservice validates ALL mandatory fields on any PUT even when only
+        changing status.  This method handles that by:
+        1. Fetching the current ticket to preserve populated field values.
+        2. Sending a PUT with the existing non-null/non-empty custom fields.
+        3. If Freshservice returns 400 with string-blank/missing errors, adding
+           a "-" placeholder for each offending field and retrying once.
 
         Parameters:
             ticket_id: Fresh ticket identifier.
@@ -369,7 +384,7 @@ class FreshClient:
 
         try:
             async with httpx.AsyncClient(timeout=20) as client:
-                # Fetch current ticket to preserve all mandatory field values.
+                # Fetch current ticket to preserve existing field values.
                 get_resp = await client.get(
                     f"{base_url}/api/v2/tickets/{ticket_id}",
                     auth=auth,
@@ -379,20 +394,15 @@ class FreshClient:
                 raw = get_resp.json()
                 ticket_data = raw.get("ticket", raw)
 
-                # Only include custom fields that already have a value.
-                # Sending null/empty values for mandatory date/boolean/string
-                # fields triggers Freshservice validation errors we cannot fix.
+                # Build initial payload with only non-null, non-empty fields
+                # to avoid Freshservice rejecting date/boolean fields set to "".
                 custom_fields: dict[str, Any] = ticket_data.get("custom_fields") or {}
-                populated_custom_fields = {k: v for k, v in custom_fields.items() if v is not None and v != ""}
+                populated_custom = {k: v for k, v in custom_fields.items() if v is not None and v != ""}
                 payload: dict[str, Any] = {"status": status}
-                if populated_custom_fields:
-                    payload["custom_fields"] = populated_custom_fields
-
-                # Preserve description only when it is non-empty; sending an
-                # empty string triggers a Freshservice "mandatory field blank"
-                # validation error that we cannot bypass.
-                description = ticket_data.get("description") or ""
-                if description.strip():
+                if populated_custom:
+                    payload["custom_fields"] = populated_custom
+                description = (ticket_data.get("description") or "").strip()
+                if description:
                     payload["description"] = description
 
                 response = await client.put(
@@ -400,11 +410,37 @@ class FreshClient:
                     auth=auth,
                     json=payload,
                 )
+
+                # On 400 retry once: fill blank/missing string fields with "-"
+                # so Freshservice mandatory-field validation passes.
+                if response.status_code == 400:
+                    errors = _parse_validation_errors(response.text)
+                    string_blank_fields = [e["field"] for e in errors if _is_string_blank_error(e)]
+                    if string_blank_fields:
+                        logger.warning(
+                            "resolve_ticket %s: blank mandatory fields %s — retrying with placeholder",
+                            ticket_id, string_blank_fields,
+                        )
+                        retry_payload = dict(payload)
+                        retry_custom = dict(retry_payload.get("custom_fields") or {})
+                        for field in string_blank_fields:
+                            if field == "description":
+                                retry_payload["description"] = "-"
+                            else:
+                                retry_custom[field] = "-"
+                        if retry_custom:
+                            retry_payload["custom_fields"] = retry_custom
+                        response = await client.put(
+                            f"{base_url}/api/v2/tickets/{ticket_id}",
+                            auth=auth,
+                            json=retry_payload,
+                        )
+
                 if not response.is_success:
-                    body = response.text
-                    logger.error("Fresh resolve ticket %s failed %s: %s", ticket_id, response.status_code, body)
-                    if response.status_code == 400:
-                        _raise_validation_error(response.text, ticket_id)
+                    logger.error(
+                        "Fresh resolve ticket %s failed %s: %s",
+                        ticket_id, response.status_code, response.text,
+                    )
                 response.raise_for_status()
                 return response.json()
         except ExternalServiceError:
