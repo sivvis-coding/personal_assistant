@@ -1,8 +1,14 @@
 import { useEffect, useState } from 'react';
 import {
+  Alert,
   Box,
+  Button,
   Chip,
   CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   Link,
   Paper,
   Table,
@@ -11,11 +17,13 @@ import {
   TableContainer,
   TableHead,
   TableRow,
+  TextField,
   Tooltip,
   Typography,
 } from '@mui/material';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
-import { getLinkedTasks } from '../api/links';
+import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
+import { closeLinkedTicket, getLinkedTasks } from '../api/links';
 import type { LinkedTaskItem } from '../types/links';
 import { useNavigate } from 'react-router-dom';
 
@@ -55,24 +63,110 @@ function formatDate(iso: string): string {
   }
 }
 
+function defaultReplyDraft(item: LinkedTaskItem): string {
+  return `Hemos completado la tarea relacionada con tu solicitud "${item.ticket_subject || `#${item.ticket_id}`}".
+
+El problema ha sido resuelto. Si tienes alguna duda adicional, no dudes en contactarnos.
+
+Saludos,
+El equipo de soporte`;
+}
+
+interface CloseDialogProps {
+  item: LinkedTaskItem;
+  onClose: () => void;
+  onSuccess: () => void;
+}
+
+function CloseTicketDialog({ item, onClose, onSuccess }: CloseDialogProps) {
+  const [replyBody, setReplyBody] = useState(() => defaultReplyDraft(item));
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSubmit() {
+    if (!replyBody.trim()) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await closeLinkedTicket(item.ticket_id, replyBody.trim());
+      onSuccess();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
+      <DialogTitle>Responder y cerrar ticket #{item.ticket_id}</DialogTitle>
+      <DialogContent>
+        {item.ticket_subject ? (
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            {item.ticket_subject}
+          </Typography>
+        ) : null}
+
+        <TextField
+          label="Respuesta al cliente"
+          multiline
+          rows={8}
+          fullWidth
+          value={replyBody}
+          onChange={(e) => setReplyBody(e.target.value)}
+          disabled={submitting}
+          sx={{ mt: 1 }}
+        />
+
+        {error ? (
+          <Alert severity="error" sx={{ mt: 2 }}>
+            {error}
+          </Alert>
+        ) : null}
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose} disabled={submitting}>
+          Cancelar
+        </Button>
+        <Button
+          variant="contained"
+          color="success"
+          startIcon={submitting ? <CircularProgress size={16} color="inherit" /> : <CheckCircleOutlineIcon />}
+          onClick={handleSubmit}
+          disabled={submitting || !replyBody.trim()}
+        >
+          {submitting ? 'Enviando…' : 'Enviar y resolver'}
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
 export function LinkedTasksPage() {
   const [items, setItems] = useState<LinkedTaskItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [closeTarget, setCloseTarget] = useState<LinkedTaskItem | null>(null);
   const navigate = useNavigate();
 
-  useEffect(() => {
-    async function load() {
-      try {
-        setItems(await getLinkedTasks());
-      } catch (e) {
-        setError((e as Error).message);
-      } finally {
-        setLoading(false);
-      }
+  async function load() {
+    setLoading(true);
+    try {
+      setItems(await getLinkedTasks());
+      setError(null);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
     }
+  }
+
+  useEffect(() => { void load(); }, []);
+
+  function handleCloseSuccess() {
+    setCloseTarget(null);
     void load();
-  }, []);
+  }
 
   if (loading) {
     return (
@@ -107,6 +201,7 @@ export function LinkedTasksPage() {
                 <TableCell>Tarea ClickUp</TableCell>
                 <TableCell>Estado ClickUp</TableCell>
                 <TableCell>Creado</TableCell>
+                <TableCell align="center">Acción</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -182,6 +277,20 @@ export function LinkedTasksPage() {
                         {formatDate(item.created_at)}
                       </Typography>
                     </TableCell>
+
+                    <TableCell align="center">
+                      {needsReply ? (
+                        <Button
+                          size="small"
+                          variant="contained"
+                          color="success"
+                          startIcon={<CheckCircleOutlineIcon />}
+                          onClick={() => setCloseTarget(item)}
+                        >
+                          Responder y cerrar
+                        </Button>
+                      ) : null}
+                    </TableCell>
                   </TableRow>
                 );
               })}
@@ -189,6 +298,14 @@ export function LinkedTasksPage() {
           </Table>
         </TableContainer>
       )}
+
+      {closeTarget ? (
+        <CloseTicketDialog
+          item={closeTarget}
+          onClose={() => setCloseTarget(null)}
+          onSuccess={handleCloseSuccess}
+        />
+      ) : null}
     </Box>
   );
 }

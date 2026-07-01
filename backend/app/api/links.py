@@ -1,13 +1,21 @@
 """Integration links API — ticket ↔ ClickUp task pairs."""
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.api.deps import get_clickup_client, get_integration_link_repository, get_ticket_service, require_auth
+from app.api.deps import (
+    get_clickup_client,
+    get_freshservice_adapter,
+    get_integration_link_repository,
+    get_ticket_service,
+    require_auth,
+)
 from app.domain.integration_link.value_objects import RelationType
 from app.integrations.clickup import ClickUpClient
 from app.repositories.integration_link_repository import IntegrationLinkRepository
 from app.services.ticket_service import TicketService
+from app.tools.freshservice.adapter import FreshserviceAdapter
+from app.tools.freshservice.schemas import ReplyTicketInput, ResolveTicketInput
 
 router = APIRouter(prefix="/integration-links", tags=["integration-links"], dependencies=[Depends(require_auth)])
 
@@ -96,3 +104,58 @@ async def list_linked_tasks(
 
     items.sort(key=lambda x: x.created_at, reverse=True)
     return items
+
+
+class CloseLinkedTicketRequest(BaseModel):
+    """Request body for closing a linked ticket.
+
+    Parameters:
+        reply_body: Public reply text to send to the customer before resolving.
+    """
+
+    reply_body: str
+
+
+class CloseLinkedTicketResponse(BaseModel):
+    """Response for a close-linked-ticket operation.
+
+    Parameters:
+        ticket_id: Freshservice ticket identifier.
+        success: Whether the operation completed without errors.
+    """
+
+    ticket_id: str
+    success: bool
+
+
+@router.post("/{ticket_id}/close", response_model=CloseLinkedTicketResponse)
+async def close_linked_ticket(
+    ticket_id: str,
+    body: CloseLinkedTicketRequest,
+    freshservice_adapter: FreshserviceAdapter = Depends(get_freshservice_adapter),
+) -> CloseLinkedTicketResponse:
+    """Reply to a Freshservice ticket and mark it as resolved in one step.
+
+    Parameters:
+        ticket_id: Freshservice ticket identifier.
+        body: Request body with the customer-facing reply text.
+        freshservice_adapter: Adapter for Freshservice write operations.
+
+    Returns:
+        Result indicating whether the ticket was successfully closed.
+
+    Edge cases:
+        Both reply and resolve must succeed — a reply failure aborts the resolve.
+        Freshservice API errors surface as 502 so the frontend can show them.
+    """
+    try:
+        await freshservice_adapter.reply_ticket(ReplyTicketInput(ticket_id=ticket_id, body=body.reply_body))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Error al enviar la respuesta: {exc}") from exc
+
+    try:
+        await freshservice_adapter.resolve_ticket(ResolveTicketInput(ticket_id=ticket_id, status="resolved"))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Respuesta enviada pero error al resolver el ticket: {exc}") from exc
+
+    return CloseLinkedTicketResponse(ticket_id=ticket_id, success=True)
