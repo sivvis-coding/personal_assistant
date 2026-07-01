@@ -8,6 +8,7 @@ from app.assistant.context_builder import AssistantContextBuilder
 from app.assistant.schemas.actions import AssistantAction, AssistantActionCreate
 from app.assistant.schemas.conversation import AssistantMessageResponse, ConversationDetailResponse, ConversationSummaryResponse
 from app.assistant.schemas.recommendations import PrioritizedWorkPlan
+from app.core.memory.interface import UserMemory
 from app.repositories.conversation_repository import ConversationRepository
 from app.tools.assistant_action.tool import AssistantActionTool
 from app.tools.base import ToolInterface, ToolRegistry, ToolResult
@@ -44,6 +45,7 @@ class AssistantConversationService:
         conversation_agent: ConversationAgent,
         time_agent: TimeAgent,
         tool_registry: ToolRegistry,
+        user_prefs: UserMemory | None = None,
     ) -> None:
         """Initialize the conversation service.
 
@@ -54,6 +56,7 @@ class AssistantConversationService:
             conversation_agent: LLM-backed agent for general messages.
             time_agent: Agent specialized in time tracking requests.
             tool_registry: Registry of available tools.
+            user_prefs: Optional user preferences store for reading and writing memories.
 
         Returns:
             None.
@@ -67,6 +70,7 @@ class AssistantConversationService:
         self._conversation_agent = conversation_agent
         self._time_agent = time_agent
         self._tool_registry = tool_registry
+        self._user_prefs = user_prefs
 
     async def list_conversations(self) -> list[ConversationSummaryResponse]:
         """List all conversation summaries ordered by most recent.
@@ -179,6 +183,7 @@ class AssistantConversationService:
             )
 
         actions = await self._create_actions_from_response(conversation_result)
+        await self._save_memory_updates(conversation_result.memory_updates)
 
         await self._conversation_repository.append_turn(
             conversation_id,
@@ -303,6 +308,32 @@ class AssistantConversationService:
             work_plan=_empty_work_plan(),
             proposed_actions=actions,
         )
+
+    async def _save_memory_updates(self, updates: list[dict]) -> None:
+        """Persist key/value pairs proposed by the agent as user preferences.
+
+        Parameters:
+            updates: List of dicts with "key" and "value" fields.
+
+        Returns:
+            None.
+
+        Edge cases:
+            Entries without a "key" field are skipped.
+            Individual failures are logged and do not abort the loop.
+        """
+        if not updates or self._user_prefs is None:
+            return
+        for update in updates:
+            key = update.get("key")
+            value = update.get("value")
+            if not key:
+                continue
+            try:
+                await self._user_prefs.set_preference(key, value)
+                logger.info("Saved user preference: %s=%r", key, value)
+            except Exception:  # noqa: BLE001
+                logger.warning("Failed to save user preference: %s", key)
 
     def _chat_tools(self) -> list[ToolInterface]:
         """Return the subset of tools available to the conversation agent.

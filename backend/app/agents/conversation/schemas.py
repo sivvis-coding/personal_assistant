@@ -39,12 +39,14 @@ class ConversationResponse(BaseModel):
         proposed_actions: Pending actions proposed for human approval.
         needs_clarification: Whether the assistant needs more user input.
         clarification_question: Question to ask the user when clarification is needed.
+        memory_updates: Key/value pairs to persist as user preferences after this turn.
 
     Returns:
         Validated conversation response.
 
     Edge cases:
         When needs_clarification is True, proposed_actions and tool_calls should be empty.
+        memory_updates entries without a "key" field are silently ignored.
     """
 
     answer: str
@@ -54,3 +56,4 @@ class ConversationResponse(BaseModel):
     proposed_actions: list[AssistantActionCreate] = Field(default_factory=list)
     needs_clarification: bool = False
     clarification_question: str = ""
+    memory_updates: list[dict[str, Any]] = Field(default_factory=list)

@@ -1,4 +1,5 @@
 from app.assistant.schemas.context import AssistantContext
+from app.core.memory.interface import UserMemory
 from app.domain.integration_link.value_objects import RelationType
 from app.repositories.integration_link_repository import IntegrationLinkRepository
 from app.services.clickup_service import ClickUpService
@@ -14,6 +15,7 @@ class AssistantContextBuilder:
         clickup_service: Service used to read ClickUp time data.
         integration_link_repository: Repository used to detect existing Fresh-to-ClickUp links.
         settings_service: Service used to read editable settings (clickup_lists, agent_system_prompt).
+        user_prefs: Optional user preferences store; loaded when present.
 
     Returns:
         Context builder for assistant orchestration.
@@ -21,6 +23,7 @@ class AssistantContextBuilder:
     Edge cases:
         Existing service mock fallbacks are preserved rather than hidden.
         Settings failures are swallowed so the assistant can still respond without list config.
+        user_prefs failures are swallowed so the assistant can still respond without preferences.
     """
 
     def __init__(
@@ -29,11 +32,13 @@ class AssistantContextBuilder:
         clickup_service: ClickUpService,
         integration_link_repository: IntegrationLinkRepository,
         settings_service: SettingsService,
+        user_prefs: UserMemory | None = None,
     ) -> None:
         self._ticket_service = ticket_service
         self._clickup_service = clickup_service
         self._integration_link_repository = integration_link_repository
         self._settings_service = settings_service
+        self._user_prefs = user_prefs
 
     async def build(self) -> AssistantContext:
         """Build the current assistant context snapshot.
@@ -42,7 +47,7 @@ class AssistantContextBuilder:
             None.
 
         Returns:
-            Assistant context with tickets, weekly time, backlog links, and list config.
+            Assistant context with tickets, weekly time, backlog links, list config, and user preferences.
 
         Edge cases:
             Link lookup is per ticket because the current repository exposes single-link reads only.
@@ -63,6 +68,13 @@ class AssistantContextBuilder:
             clickup_lists = []
             agent_system_prompt = ""
 
+        user_preferences: dict = {}
+        if self._user_prefs is not None:
+            try:
+                user_preferences = await self._user_prefs.get_all()
+            except Exception:  # noqa: BLE001
+                pass
+
         return AssistantContext(
             tickets=ticket_list.items,
             ticket_source=ticket_list.source,
@@ -70,4 +82,5 @@ class AssistantContextBuilder:
             existing_backlog_ticket_ids=existing_backlog_ticket_ids,
             clickup_lists=clickup_lists,
             agent_system_prompt=agent_system_prompt,
+            user_preferences=user_preferences,
         )

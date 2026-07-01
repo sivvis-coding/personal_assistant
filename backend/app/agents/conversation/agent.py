@@ -91,6 +91,7 @@ class ConversationAgent:
                 "week_time": context.week_time.model_dump(),
                 "existing_backlog_ticket_ids": context.existing_backlog_ticket_ids,
                 "clickup_lists": [lst.model_dump() for lst in context.clickup_lists],
+                "user_preferences": context.user_preferences,
             },
             "available_tools": _tool_descriptions(tools),
             "agent_instructions": context.agent_system_prompt,

@@ -247,29 +247,6 @@ def get_settings_service(
     return SettingsService(repository)
 
 
-def get_assistant_context_builder(
-    ticket_service: TicketService = Depends(get_ticket_service),
-    clickup_service: ClickUpService = Depends(get_clickup_service),
-    integration_link_repository: IntegrationLinkRepository = Depends(get_integration_link_repository),
-    settings_service: SettingsService = Depends(get_settings_service),
-) -> AssistantContextBuilder:
-    """Create assistant context builder dependency.
-
-    Parameters:
-        ticket_service: Ticket service dependency.
-        clickup_service: ClickUp service dependency.
-        integration_link_repository: Integration link repository dependency.
-        settings_service: Settings service dependency.
-
-    Returns:
-        Assistant context builder.
-
-    Edge cases:
-        None.
-    """
-    return AssistantContextBuilder(ticket_service, clickup_service, integration_link_repository, settings_service)
-
-
 def get_memory_facade(request: Request) -> MemoryFacade:
     """Return the memory facade stored in application state.
 
@@ -287,6 +264,32 @@ def get_memory_facade(request: Request) -> MemoryFacade:
         Raises AttributeError if lifespan did not complete successfully.
     """
     return request.app.state.memory_facade
+
+
+def get_assistant_context_builder(
+    ticket_service: TicketService = Depends(get_ticket_service),
+    clickup_service: ClickUpService = Depends(get_clickup_service),
+    integration_link_repository: IntegrationLinkRepository = Depends(get_integration_link_repository),
+    settings_service: SettingsService = Depends(get_settings_service),
+    memory_facade: MemoryFacade = Depends(get_memory_facade),
+) -> AssistantContextBuilder:
+    """Create assistant context builder dependency.
+
+    Parameters:
+        ticket_service: Ticket service dependency.
+        clickup_service: ClickUp service dependency.
+        integration_link_repository: Integration link repository dependency.
+        settings_service: Settings service dependency.
+        memory_facade: Memory facade for loading user preferences.
+
+    Returns:
+        Assistant context builder.
+
+    Edge cases:
+        None.
+    """
+    user_prefs = memory_facade.for_agent("conversation").user_prefs
+    return AssistantContextBuilder(ticket_service, clickup_service, integration_link_repository, settings_service, user_prefs)
 
 
 def get_time_agent(
@@ -434,6 +437,7 @@ def get_assistant_conversation_service(
     conversation_agent: ConversationAgent = Depends(get_conversation_agent),
     time_agent: TimeAgent = Depends(get_time_agent),
     tool_registry: ToolRegistry = Depends(get_tool_registry),
+    memory_facade: MemoryFacade = Depends(get_memory_facade),
 ) -> AssistantConversationService:
     """Create assistant conversation service dependency.
 
@@ -444,6 +448,7 @@ def get_assistant_conversation_service(
         conversation_agent: LLM-backed conversation agent dependency.
         time_agent: Time agent dependency.
         tool_registry: Tool registry dependency.
+        memory_facade: Memory facade for persisting user preferences.
 
     Returns:
         Assistant conversation service.
@@ -451,6 +456,7 @@ def get_assistant_conversation_service(
     Edge cases:
         None.
     """
+    user_prefs = memory_facade.for_agent("conversation").user_prefs
     return AssistantConversationService(
         conversation_repository,
         assistant_action_tool,
@@ -458,6 +464,7 @@ def get_assistant_conversation_service(
         conversation_agent,
         time_agent,
         tool_registry,
+        user_prefs,
     )
 
 

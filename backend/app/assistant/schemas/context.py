@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.schemas.clickup import WeekTimeResponse
 from app.schemas.settings import ClickUpListConfig
@@ -15,6 +15,7 @@ class AssistantContext(BaseModel):
         existing_backlog_ticket_ids: Fresh ticket IDs already linked to ClickUp tasks.
         clickup_lists: Configured ClickUp lists with routing descriptions and field docs.
         agent_system_prompt: Custom behavioral instructions appended to the base agent prompt.
+        user_preferences: Persisted user preferences loaded from MongoDB.
 
     Returns:
         Context snapshot for assistant reasoning.
@@ -22,6 +23,7 @@ class AssistantContext(BaseModel):
     Edge cases:
         Mock sources are preserved so the assistant can avoid presenting fake data as real.
         clickup_lists is empty when not yet configured.
+        user_preferences is empty dict when no preferences are stored yet.
     """
 
     tickets: list[Ticket]
@@ -30,3 +32,4 @@ class AssistantContext(BaseModel):
     existing_backlog_ticket_ids: list[str]
     clickup_lists: list[ClickUpListConfig] = []
     agent_system_prompt: str = ""
+    user_preferences: dict = Field(default_factory=dict)
