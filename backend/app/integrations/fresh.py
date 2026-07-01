@@ -57,6 +57,31 @@ def mock_ticket(ticket_id: str = "1001") -> Ticket:
     )
 
 
+def _raise_validation_error(body: str, ticket_id: str) -> None:
+    """Parse a Freshservice 400 validation response and raise a descriptive error.
+
+    Parameters:
+        body: Raw JSON response body from Freshservice.
+        ticket_id: Ticket ID for context in the error message.
+
+    Returns:
+        None — always raises ExternalServiceError.
+    """
+    import json as _json  # noqa: PLC0415
+    try:
+        data = _json.loads(body)
+        errors = data.get("errors", [])
+        if errors:
+            fields = ", ".join(e["field"] for e in errors)
+            raise ExternalServiceError(
+                f"El ticket #{ticket_id} tiene campos obligatorios vacíos que impiden cerrarlo: {fields}. "
+                "Por favor, rellena esos campos en Freshservice y vuelve a intentarlo."
+            )
+    except (ValueError, KeyError):
+        pass
+    raise ExternalServiceError(f"Fresh resolve ticket #{ticket_id} falló con error de validación: {body}")
+
+
 class FreshClient:
     """Client for Freshdesk/Freshservice ticket operations.
 
@@ -320,6 +345,11 @@ class FreshClient:
     async def resolve_ticket(self, ticket_id: str, status: int = 4) -> dict[str, Any]:
         """Update a Fresh ticket status (4 = resolved, 5 = closed).
 
+        Fetches the ticket first so all mandatory fields are preserved in the
+        PUT body.  Freshservice validates all fields on PUT — sending only
+        {status} causes 400 when the ticket has blank/null mandatory fields.
+        Null custom fields are converted to "" so they pass type validation.
+
         Parameters:
             ticket_id: Fresh ticket identifier.
             status: Target Fresh status integer. Defaults to 4 (resolved).
@@ -333,15 +363,52 @@ class FreshClient:
         """
         if not self._settings.has_fresh_credentials:
             return {"mock": True, "ticket_id": str(ticket_id), "status": status}
+
+        base_url = self._settings.fresh_base_url.rstrip("/")
+        auth = (self._settings.fresh_api_key, "X")
+
         try:
             async with httpx.AsyncClient(timeout=20) as client:
-                response = await client.put(
-                    f"{self._settings.fresh_base_url.rstrip('/')}/api/v2/tickets/{ticket_id}",
-                    auth=(self._settings.fresh_api_key, "X"),
-                    json={"status": status},
+                # Fetch current ticket to preserve all mandatory field values.
+                get_resp = await client.get(
+                    f"{base_url}/api/v2/tickets/{ticket_id}",
+                    auth=auth,
+                    params={"include": "requester"},
                 )
+                get_resp.raise_for_status()
+                raw = get_resp.json()
+                ticket_data = raw.get("ticket", raw)
+
+                # Only include custom fields that already have a value.
+                # Sending null/empty values for mandatory date/boolean/string
+                # fields triggers Freshservice validation errors we cannot fix.
+                custom_fields: dict[str, Any] = ticket_data.get("custom_fields") or {}
+                populated_custom_fields = {k: v for k, v in custom_fields.items() if v is not None and v != ""}
+                payload: dict[str, Any] = {"status": status}
+                if populated_custom_fields:
+                    payload["custom_fields"] = populated_custom_fields
+
+                # Preserve description only when it is non-empty; sending an
+                # empty string triggers a Freshservice "mandatory field blank"
+                # validation error that we cannot bypass.
+                description = ticket_data.get("description") or ""
+                if description.strip():
+                    payload["description"] = description
+
+                response = await client.put(
+                    f"{base_url}/api/v2/tickets/{ticket_id}",
+                    auth=auth,
+                    json=payload,
+                )
+                if not response.is_success:
+                    body = response.text
+                    logger.error("Fresh resolve ticket %s failed %s: %s", ticket_id, response.status_code, body)
+                    if response.status_code == 400:
+                        _raise_validation_error(response.text, ticket_id)
                 response.raise_for_status()
                 return response.json()
+        except ExternalServiceError:
+            raise
         except httpx.HTTPError as error:
             raise ExternalServiceError(f"Fresh resolve ticket failed: {error}") from error
 
