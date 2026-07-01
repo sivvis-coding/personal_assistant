@@ -97,6 +97,37 @@ class ClickUpClient:
             ],
         }
 
+    async def get_task(self, task_id: str) -> ClickUpTask | None:
+        """Return a single ClickUp task by ID.
+
+        Parameters:
+            task_id: ClickUp task identifier.
+
+        Returns:
+            ClickUp task or None when credentials are missing or the task is not found.
+
+        Edge cases:
+            Returns None instead of raising when the task cannot be fetched.
+        """
+        if not self._settings.clickup_api_key.strip():
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                response = await client.get(
+                    f"https://api.clickup.com/api/v2/task/{task_id}",
+                    headers={"Authorization": self._settings.clickup_api_key},
+                )
+                response.raise_for_status()
+                payload = response.json()
+                return ClickUpTask(
+                    id=str(payload.get("id")),
+                    name=str(payload.get("name") or "Untitled"),
+                    status=str(payload.get("status", {}).get("status") or "unknown").lower(),
+                    url=payload.get("url"),
+                )
+        except httpx.HTTPError:
+            return None
+
     async def list_tasks(self) -> list[ClickUpTask]:
         """Return tasks from the configured ClickUp list.
 

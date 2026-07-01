@@ -5,7 +5,7 @@ from typing import AsyncIterator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import assistant, clickup, discovery, health, metrics, settings, sync, tickets, workflow_runs
+from app.api import assistant, clickup, discovery, health, links, metrics, settings, sync, tickets, workflow_runs
 from app.core.config import build_settings_from_overrides, get_settings, set_app_settings
 from app.core.di.container import Container, bootstrap
 from app.db.mongo import MongoManager
@@ -120,3 +120,4 @@ app.include_router(settings.router)
 app.include_router(discovery.router)
 app.include_router(sync.router)
 app.include_router(assistant.router)
+app.include_router(links.router)

@@ -20,6 +20,7 @@ import ConfirmationNumberIcon from '@mui/icons-material/ConfirmationNumber';
 import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import SettingsIcon from '@mui/icons-material/Settings';
+import LinkIcon from '@mui/icons-material/Link';
 import { useActionsStore } from '../../stores/actionsStore';
 
 const DRAWER_WIDTH = 240;
@@ -55,6 +56,7 @@ export function Sidebar() {
     { label: 'Agente', path: '/assistant', icon: <ChatIcon /> },
     { label: 'Acciones', path: '/actions', icon: <AssignmentTurnedInIcon />, badge: pendingCount },
     { label: 'Tickets', path: '/tickets', icon: <ConfirmationNumberIcon /> },
+    { label: 'Tareas', path: '/linked-tasks', icon: <LinkIcon /> },
     { label: 'Configuración', path: '/settings', icon: <SettingsIcon /> },
   ];
 
