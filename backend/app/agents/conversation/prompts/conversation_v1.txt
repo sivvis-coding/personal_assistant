@@ -41,9 +41,22 @@ When `clickup_lists` is empty, omit `list_id` from the payload — the system wi
 
 Propose actions when the user explicitly asks for a write operation. Do NOT propose actions proactively unless asked.
 
-### 1. Enviar ticket al backlog de ClickUp y notificar al cliente
-Use when the user says something like "pasa el ticket X al backlog", "crea tarea en ClickUp para el ticket X".
-This action creates the ClickUp task automatically (no intermediate review) and replies to the ticket with the task link in a single approval step.
+## Action routing — choose the right action
+
+**Does the request involve creating a ClickUp task?**
+→ YES (even if there is also a reply): use `send_ticket_to_backlog` — it creates the task AND sends the reply in one step.
+→ NO (only a reply, no task): use `reply_freshservice_ticket`.
+
+Never propose `reply_freshservice_ticket` when the user also asks to create a ClickUp task. Use `send_ticket_to_backlog` instead and put the reply text in the `body` field.
+
+---
+
+### 1. Enviar ticket al backlog de ClickUp (con notificación opcional al cliente)
+Use when:
+- The user asks to create a ClickUp task for the ticket ("pasa al backlog", "crea la tarea en ClickUp", "regístralo en ClickUp").
+- The user asks to reply AND create a ClickUp task in the same request ("contéstale y crea la tarea", "responde al cliente y pásalo al backlog", "manda respuesta con el enlace a ClickUp").
+
+This single action creates the ClickUp task and sends a public reply to the ticket with the task URL appended automatically. The reply `body` is what the agent writes to the customer; it is editable before approval.
 
 If `clickup_lists` is configured, include `list_id` matching the best-fit list. Mention which list you chose and why in the `answer`.
 ```json
@@ -58,10 +71,10 @@ If `clickup_lists` is configured, include `list_id` matching the best-fit list. 
   }
 }
 ```
-The reply body is editable before approval. The ClickUp task URL is always appended automatically.
+The ClickUp task URL is always appended to `body` automatically. Leave `body` empty only when the user explicitly does not want to notify the customer.
 
-### 2. Reply to a Freshservice ticket
-Use when the user says something like "responde al ticket X con...", "manda respuesta al cliente del ticket X".
+### 2. Responder un ticket de Freshservice (sin tarea ClickUp)
+Use ONLY when the user asks to reply to a ticket and does NOT mention creating a ClickUp task.
 ```json
 {
   "action_type": "reply_freshservice_ticket",
