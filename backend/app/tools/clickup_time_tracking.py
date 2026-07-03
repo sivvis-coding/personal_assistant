@@ -293,25 +293,25 @@ def _create_clickup_time_entry(team_id: str, task_id: str, start_ms: int, end_ms
     return response.json()
 
 
-def get_clickup_client_names() -> list[str]:
-    """Return available ClickUp client names for the configured list.
+def get_clickup_client_names(list_id: str) -> list[str]:
+    """Return available ClickUp client names for the given list.
 
     Parameters:
-        None.
+        list_id: ClickUp list identifier to read the client field from.
 
     Returns:
         List of client names. Empty list when credentials are missing, the field
         is not found, or the field allows free text.
 
     Edge cases:
-        Missing credentials return an empty list so callers can fall back gracefully.
+        Missing credentials or list_id return an empty list so callers can fall back gracefully.
     """
     settings = get_settings()
-    if not settings.clickup_api_key or not settings.clickup_list_id:
+    if not settings.clickup_api_key or not list_id:
         return []
 
     try:
-        field = _find_client_field(settings.clickup_list_id)
+        field = _find_client_field(list_id)
     except httpx.HTTPError:
         return []
 
@@ -323,39 +323,6 @@ def get_clickup_client_names() -> list[str]:
         options = field.get("type_config", {}).get("options", [])
         return [option["name"] for option in options]
     return []
-
-
-@tool
-def get_available_clients() -> str:
-    """Return available ClickUp clients for the configured list.
-
-    Parameters:
-        None.
-
-    Returns:
-        Human-readable list of available clients or an error message.
-
-    Edge cases:
-        Text custom fields allow any client name instead of returning fixed options.
-    """
-    settings = get_settings()
-    if not settings.clickup_api_key or not settings.clickup_list_id:
-        return "ERROR: ClickUp API key or list ID is not configured."
-
-    try:
-        field = _find_client_field(settings.clickup_list_id)
-    except httpx.HTTPError as error:
-        return f"ERROR: Could not read ClickUp client field: {error}"
-
-    if not field:
-        return "No client field found in the configured ClickUp list."
-
-    names = get_clickup_client_names()
-    if names:
-        return f"Clientes disponibles: {', '.join(names)}"
-
-    field_type = field.get("type", "")
-    return f"El campo cliente es de tipo '{field_type}' (texto libre). El usuario puede escribir cualquier nombre."
 
 
 @tool
@@ -390,11 +357,13 @@ def prepare_time_entry(time_entry: TimeEntryData) -> str:
 
 
 @tool
-def save_time_entry(time_entry: TimeEntryData) -> str:
+def save_time_entry(time_entry: TimeEntryData, list_id: str) -> str:
     """Create a ClickUp task and register a time entry.
 
     Parameters:
         time_entry: Time entry payload validated by the agent/tool caller.
+        list_id: ClickUp list identifier to create the task in (e.g. the user's
+            personal list configured for daily hour imputation).
 
     Returns:
         Human-readable success or error message.
@@ -404,10 +373,10 @@ def save_time_entry(time_entry: TimeEntryData) -> str:
         If task creation succeeds but time entry creation fails, the task ID is returned for manual repair.
     """
     if not time_entry.get("approved", False):
-        return "ERROR: Explicit approval is required. Call prepare_time_entry first, ask the user to confirm, then call save_time_entry with approved=true."
+        return "ERROR: Explicit approval is required. Ask the user to confirm, then call save_time_entry with approved=true."
 
     settings = get_settings()
-    if not settings.clickup_api_key or not settings.clickup_team_id or not settings.clickup_list_id:
+    if not settings.clickup_api_key or not settings.clickup_team_id or not list_id:
         return "ERROR: ClickUp API key, team ID, or list ID is not configured."
 
     try:
@@ -419,17 +388,17 @@ def save_time_entry(time_entry: TimeEntryData) -> str:
 
     client_name = time_entry.get("client_name", "")
     try:
-        custom_fields = _resolve_client_custom_fields(settings.clickup_list_id, client_name)
+        custom_fields = _resolve_client_custom_fields(list_id, client_name)
     except httpx.HTTPError as error:
         return f"ERROR: Could not resolve ClickUp client field: {error}"
 
     if client_name and not custom_fields:
-        return f"ERROR: Could not resolve client '{client_name}'. Use get_available_clients before saving time entries."
+        return f"ERROR: Could not resolve client '{client_name}'."
 
     try:
-        closed_status = _get_closed_status(settings.clickup_list_id)
+        closed_status = _get_closed_status(list_id)
         task = _create_clickup_task(
-            list_id=settings.clickup_list_id,
+            list_id=list_id,
             name=time_entry["task_name"],
             description=time_entry.get("description", ""),
             custom_fields=custom_fields,

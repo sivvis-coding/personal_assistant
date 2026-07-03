@@ -64,6 +64,7 @@ class AssistantMessageResponse(BaseModel):
     proposed_actions: list[AssistantAction]
     needs_clarification: bool = False
     clarification_question: str = ""
+    next_suggestions: list[str] = Field(default_factory=list)
 
 
 class ConversationMessage(BaseModel):

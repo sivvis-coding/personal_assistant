@@ -4,6 +4,7 @@ from fastapi import Depends, Request
 
 from app.agents.conversation.agent import ConversationAgent
 from app.agents.time.agent import TimeAgent
+from app.agents.time.llm_extractor import DailyNarrativeExtractor
 from app.assistant.action_executor import AssistantActionExecutor
 from app.assistant.context_builder import AssistantContextBuilder
 from app.assistant.conversation_service import AssistantConversationService
@@ -292,26 +293,6 @@ def get_assistant_context_builder(
     return AssistantContextBuilder(ticket_service, clickup_service, integration_link_repository, settings_service, user_prefs)
 
 
-def get_time_agent(
-    memory_facade: MemoryFacade = Depends(get_memory_facade),
-) -> TimeAgent:
-    """Create time agent dependency.
-
-    Parameters:
-        memory_facade: Memory facade from the DI container.
-
-    Returns:
-        Time agent instance with ClickUp time tool for client resolution.
-
-    Edge cases:
-        The agent is stateless and safe to create per request.
-    """
-    return TimeAgent(
-        memory_facade=memory_facade,
-        clickup_time_tool=ClickUpTimeTool(),
-    )
-
-
 def get_clickup_time_tool() -> ClickUpTimeTool:
     """Create ClickUp time tool dependency.
 
@@ -394,6 +375,32 @@ def get_llm_provider(request: Request) -> LLMProvider:
     return request.app.state.llm_provider
 
 
+def get_time_agent(
+    memory_facade: MemoryFacade = Depends(get_memory_facade),
+    settings_service: SettingsService = Depends(get_settings_service),
+    llm_provider: LLMProvider = Depends(get_llm_provider),
+) -> TimeAgent:
+    """Create time agent dependency.
+
+    Parameters:
+        memory_facade: Memory facade from the DI container.
+        settings_service: Settings service used to resolve the configured personal ClickUp list.
+        llm_provider: LLM provider used for the multi-activity narrative extractor.
+
+    Returns:
+        Time agent instance with ClickUp time tool for client resolution.
+
+    Edge cases:
+        The agent is stateless and safe to create per request.
+    """
+    return TimeAgent(
+        memory_facade=memory_facade,
+        narrative_extractor=DailyNarrativeExtractor(llm_provider),
+        settings_service=settings_service,
+        clickup_time_tool=ClickUpTimeTool(),
+    )
+
+
 def get_tool_registry(request: Request) -> ToolRegistry:
     """Return the tool registry stored in application state.
 
@@ -427,7 +434,7 @@ def get_conversation_agent(
     Edge cases:
         The agent is stateless and safe to create per request.
     """
-    return ConversationAgent(llm_provider)
+    return ConversationAgent(llm_provider, max_tool_iterations=6)
 
 
 def get_assistant_conversation_service(
@@ -513,6 +520,8 @@ def get_assistant_action_executor(
     ticket_to_clickup_tool: TicketToClickUpTool = Depends(get_ticket_to_clickup_tool),
     clickup_time_tool: ClickUpTimeTool = Depends(get_clickup_time_tool),
     freshservice_adapter: FreshserviceAdapter = Depends(get_freshservice_adapter),
+    integration_link_repository: IntegrationLinkRepository = Depends(get_integration_link_repository),
+    settings_service: SettingsService = Depends(get_settings_service),
 ) -> AssistantActionExecutor:
     """Create assistant action executor dependency.
 
@@ -521,6 +530,8 @@ def get_assistant_action_executor(
         ticket_to_clickup_tool: Ticket-to-ClickUp tool dependency.
         clickup_time_tool: ClickUp time tool dependency.
         freshservice_adapter: Freshservice adapter dependency.
+        integration_link_repository: Repository for ticket-to-task links.
+        settings_service: Settings service used to resolve the personal ClickUp list at execution time.
 
     Returns:
         Assistant action executor.
@@ -534,4 +545,6 @@ def get_assistant_action_executor(
         ticket_to_clickup_tool,
         clickup_time_tool,
         freshservice_adapter,
+        integration_link_repository,
+        settings_service,
     )

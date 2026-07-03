@@ -9,7 +9,9 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'error';
   text: string;
   actions: AssistantAction[];
+  suggestions: string[];
   timestamp: Date;
+  streaming?: boolean;
 }
 
 /**
@@ -40,6 +42,7 @@ interface ChatActions {
   setConversationId: (id: string | null) => void;
   addMessage: (message: ChatMessage) => void;
   updateMessage: (id: string, updates: Partial<ChatMessage>) => void;
+  appendToMessage: (id: string, text: string) => void;
   setMessages: (messages: ChatMessage[]) => void;
   setPendingActions: (actions: AssistantAction[]) => void;
   updatePendingAction: (action: AssistantAction) => void;
@@ -82,6 +85,10 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
     set((state) => ({
       messages: state.messages.map((message) => (message.id === id ? { ...message, ...updates } : message)),
     })),
+  appendToMessage: (id, text) =>
+    set((state) => ({
+      messages: state.messages.map((message) => (message.id === id ? { ...message, text: message.text + text } : message)),
+    })),
   setMessages: (messages) => set({ messages }),
   setPendingActions: (pendingActions) => set({ pendingActions }),
   updatePendingAction: (action) =>
@@ -99,7 +106,6 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
     })),
   selectConversation: (id) => set({ selectedConversationId: id }),
   resetChat: () => {
-    window.localStorage.removeItem('ASSISTANT_CONVERSATION_ID');
     set({
       conversationId: null,
       messages: [],

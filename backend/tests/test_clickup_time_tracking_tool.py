@@ -120,7 +120,7 @@ def test_should_return_error_when_saving_time_entry_without_approval() -> None:
     }
 
     # Act
-    result = save_time_entry.invoke({"time_entry": time_entry})
+    result = save_time_entry.invoke({"time_entry": time_entry, "list_id": "list-1"})
 
     # Assert
     assert "Explicit approval is required" in result

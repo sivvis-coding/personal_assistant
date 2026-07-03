@@ -69,6 +69,13 @@ class TicketListResult:
 
 
 @dataclass(frozen=True)
+class GetConversationsInput:
+    """Input for get_conversations operation."""
+
+    ticket_id: str
+
+
+@dataclass(frozen=True)
 class TicketDetailResult:
     """Output for get_ticket operation."""
 

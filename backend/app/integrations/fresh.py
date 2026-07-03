@@ -271,22 +271,39 @@ class FreshClient:
         """
         if not self._settings.has_fresh_credentials:
             return mock_ticket(ticket_id), "mock"
+        base = self._settings.fresh_base_url.rstrip("/")
+        auth = (self._settings.fresh_api_key, "X")
         try:
             async with httpx.AsyncClient(timeout=20) as client:
-                url = f"{self._settings.fresh_base_url.rstrip('/')}/api/v2/tickets/{ticket_id}"
+                url = f"{base}/api/v2/tickets/{ticket_id}"
                 # workspace_id is NOT supported by the single-ticket endpoint.
+                # requested_items is not a valid include value in all Freshservice instances;
+                # the sub-endpoint fallback below handles that case.
                 params = {"include": "requester"}
                 logger.info("Fresh get ticket request: %s params=%s", url, params)
-                response = await client.get(
-                    url,
-                    auth=(self._settings.fresh_api_key, "X"),
-                    params=params,
-                )
+                response = await client.get(url, auth=auth, params=params)
                 response.raise_for_status()
                 payload = response.json()
                 # Single-ticket endpoint wraps the object under {"ticket": {...}}.
                 ticket_data = payload.get("ticket", payload)
-                return self._normalize_ticket(ticket_data), "fresh"
+                ticket = self._normalize_ticket(ticket_data)
+
+                # Some Freshservice instances don't embed requested_items via include —
+                # fall back to the dedicated sub-endpoint for service requests.
+                if ticket.requested_items is None:
+                    try:
+                        ri_url = f"{base}/api/v2/tickets/{ticket_id}/requested_items"
+                        ri_resp = await client.get(ri_url, auth=auth)
+                        if ri_resp.status_code == 200:
+                            ri_payload = ri_resp.json()
+                            items = ri_payload if isinstance(ri_payload, list) else ri_payload.get("requested_items", [])
+                            if isinstance(items, list) and items:
+                                ticket = ticket.model_copy(update={"requested_items": items})
+                                logger.info("Fetched %d requested_items via sub-endpoint for ticket %s", len(items), ticket_id)
+                    except Exception:  # noqa: BLE001
+                        pass  # sub-endpoint failure is non-fatal
+
+                return ticket, "fresh"
         except httpx.HTTPStatusError as error:
             body = error.response.text
             logger.error("Fresh get ticket failed: %s - body: %s", error, body)
@@ -763,6 +780,8 @@ class FreshClient:
         ticket_id = str(payload.get("id"))
         custom_fields = payload.get("custom_fields") or {}
         clickup_url = custom_fields.get("clickup_url") or None
+        raw_requested_items = payload.get("requested_items")
+        requested_items = raw_requested_items if isinstance(raw_requested_items, list) and raw_requested_items else None
         return Ticket(
             id=ticket_id,
             subject=str(payload.get("subject") or "Untitled ticket"),
@@ -770,6 +789,8 @@ class FreshClient:
             priority=self._normalize_priority(payload.get("priority")),
             requester=requester,
             description=payload.get("description_text") or FreshClient._strip_html(payload.get("description") or ""),
+            custom_fields=dict(custom_fields),
+            requested_items=requested_items,
             url=self._ticket_url(ticket_id),
             clickup_url=str(clickup_url) if clickup_url else None,
             raw=payload,

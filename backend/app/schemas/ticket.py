@@ -135,6 +135,8 @@ class Ticket(BaseModel):
     priority: TicketPriority
     requester: TicketRequester
     description: str | None = None
+    custom_fields: dict[str, Any] = {}
+    requested_items: list[dict[str, Any]] | None = None
     url: str | None = None
     clickup_url: str | None = None
     raw: dict[str, Any]

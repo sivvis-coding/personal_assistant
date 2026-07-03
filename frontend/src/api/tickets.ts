@@ -14,12 +14,14 @@ export type TicketListScope = 'mine' | 'all';
 export interface ListTicketsOptions {
   scope?: TicketListScope;
   includeClosed?: boolean;
+  forceRefresh?: boolean;
 }
 
 export function listTickets(options: ListTicketsOptions = {}): Promise<TicketListResponse> {
   const params = new URLSearchParams();
   params.set('scope', options.scope ?? 'mine');
   params.set('include_closed', String(options.includeClosed ?? false));
+  if (options.forceRefresh) params.set('force_refresh', 'true');
   return apiRequest<TicketListResponse>(`/tickets?${params.toString()}`);
 }
 

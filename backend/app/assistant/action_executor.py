@@ -1,6 +1,12 @@
+from urllib.parse import urlparse
+
 from app.assistant.safety_policy import AssistantSafetyPolicy
 from app.assistant.schemas.actions import AssistantAction, AssistantActionCreate
+from app.domain.integration_link.value_objects import RelationType
 from app.repositories.assistant_action_repository import AssistantActionRepository
+from app.repositories.integration_link_repository import IntegrationLinkRepository
+from app.schemas.integration import IntegrationLinkDocument
+from app.services.settings_service import SettingsService
 from app.tools.base import ToolResult
 from app.tools.clickup_time.tool import ClickUpTimeTool
 from app.tools.freshservice.adapter import FreshserviceAdapter
@@ -33,27 +39,16 @@ class AssistantActionExecutor:
         ticket_to_clickup_tool: TicketToClickUpTool,
         clickup_time_tool: ClickUpTimeTool,
         freshservice_adapter: FreshserviceAdapter,
+        integration_link_repository: IntegrationLinkRepository | None = None,
+        settings_service: SettingsService | None = None,
     ) -> None:
-        """Initialize the assistant action executor.
-
-        Parameters:
-            action_repository: Repository for action state.
-            safety_policy: Policy validator for execution boundaries.
-            ticket_to_clickup_tool: Tool for ticket-to-ClickUp workflows.
-            clickup_time_tool: Tool for creating ClickUp time entries.
-            freshservice_adapter: Adapter for Freshservice write operations.
-
-        Returns:
-            None.
-
-        Edge cases:
-            All write-capable capabilities come through tools for safety review.
-        """
         self._action_repository = action_repository
         self._safety_policy = safety_policy
         self._ticket_to_clickup_tool = ticket_to_clickup_tool
         self._clickup_time_tool = clickup_time_tool
         self._freshservice_adapter = freshservice_adapter
+        self._integration_link_repository = integration_link_repository
+        self._settings_service = settings_service
 
     async def approve(self, action_id: str) -> AssistantAction:
         """Approve and execute one assistant action.
@@ -85,6 +80,8 @@ class AssistantActionExecutor:
             return await self._request_info_freshservice_ticket(action)
         if action.action_type == "send_ticket_to_backlog":
             return await self._send_ticket_to_backlog(action)
+        if action.action_type == "link_existing_clickup_task":
+            return await self._link_existing_clickup_task(action)
         raise ValueError(f"Unsupported assistant action type: {action.action_type}")
 
     async def reject(self, action_id: str) -> AssistantAction:
@@ -171,12 +168,11 @@ class AssistantActionExecutor:
         task_url = clickup_task.get("url") or ""
         reply_result: dict = {}
         if task_url:
+            body_prefix = str(action.payload.get("body", "")).strip()
+            reply_body = f"{body_prefix}\n\nTarea en ClickUp: {task_url}" if body_prefix else f"Tarea en ClickUp: {task_url}"
             try:
                 reply_result = await self._freshservice_adapter.reply_ticket(
-                    ReplyTicketInput(
-                        ticket_id=action.ticket_id,
-                        body=f"Tarea en ClickUp: {task_url}",
-                    )
+                    ReplyTicketInput(ticket_id=action.ticket_id, body=reply_body)
                 )
             except Exception as exc:  # noqa: BLE001
                 reply_result = {"error": str(exc)}
@@ -194,6 +190,10 @@ class AssistantActionExecutor:
     async def _save_time_entry(self, action: AssistantAction) -> AssistantAction:
         """Create a ClickUp task and register a time entry after approval.
 
+        The target list is the personal ClickUp list configured in /settings,
+        resolved at execution time (not at propose time) so it always reflects
+        the current configuration.
+
         Parameters:
             action: Approved save_time_entry action with a valid payload.
 
@@ -201,11 +201,29 @@ class AssistantActionExecutor:
             Completed action with the ClickUp tool result.
 
         Edge cases:
-            Tool failures are stored as failed action results.
+            Tool failures, and a missing personal list configuration, are stored as failed action results.
         """
+        if self._settings_service is None:
+            return await self._action_repository.update_status(
+                action.id, "failed", result={"message": "Settings service is not configured.", "error": True}
+            )
+
+        app_settings = await self._settings_service.get_settings()
+        list_id = app_settings.clickup_personal_list_id
+        if not list_id:
+            return await self._action_repository.update_status(
+                action.id,
+                "failed",
+                result={
+                    "message": "No hay lista personal de ClickUp configurada. Ve a Configuración y selecciona una.",
+                    "error": True,
+                },
+            )
+
         payload = action.payload
         tool_result: ToolResult = await self._clickup_time_tool.execute(
             operation="save",
+            list_id=list_id,
             task_name=payload["task_name"],
             description=payload["description"],
             start_datetime=payload["start_datetime"],
@@ -236,7 +254,7 @@ class AssistantActionExecutor:
         """
         assert action.ticket_id is not None
 
-        # Step 1: generate user story
+        # Step 1: generate user story (prepare only — task creation happens on second approval)
         prepare_result: ToolResult = await self._ticket_to_clickup_tool.execute(
             operation="prepare", ticket_id=action.ticket_id
         )
@@ -247,46 +265,25 @@ class AssistantActionExecutor:
 
         user_story = prepare_result.data["user_story"]
 
-        # Step 2: create ClickUp task
-        list_id = action.payload.get("list_id") or None
-        approve_result: ToolResult = await self._ticket_to_clickup_tool.execute(
-            operation="approve", ticket_id=action.ticket_id, user_story=user_story, list_id=list_id
+        # Step 2: create follow-up approve_clickup_task so the user can review/edit the user story
+        follow_up_payload: dict = {"user_story": user_story}
+        if action.payload.get("list_id"):
+            follow_up_payload["list_id"] = action.payload["list_id"]
+        if action.payload.get("body"):
+            follow_up_payload["body"] = action.payload["body"]  # preserved for final reply
+        follow_up = await self._action_repository.create_action(
+            AssistantActionCreate(
+                action_type="approve_clickup_task",
+                title=f"Crear tarea ClickUp para ticket {action.ticket_id}",
+                description="Revisa y ajusta la user story antes de crear la tarea en ClickUp.",
+                ticket_id=action.ticket_id,
+                payload=follow_up_payload,
+            )
         )
-        if not approve_result.success:
-            return await self._action_repository.update_status(
-                action.id, "failed", result={"message": approve_result.message, "error": True}
-            )
-
-        clickup_task = approve_result.data.get("clickup_task", {})
-        task_url = clickup_task.get("url") or ""
-
-        # Step 3: reply to ticket with the task link
-        body_prefix = str(action.payload.get("body", "")).strip()
-        if task_url:
-            reply_body = f"{body_prefix}\n\nTarea en ClickUp: {task_url}" if body_prefix else f"Tarea en ClickUp: {task_url}"
-        else:
-            reply_body = body_prefix or "La tarea ha sido creada en el backlog de ClickUp."
-
-        try:
-            reply_result = await self._freshservice_adapter.reply_ticket(
-                ReplyTicketInput(ticket_id=action.ticket_id, body=reply_body)
-            )
-        except Exception as exc:  # noqa: BLE001
-            return await self._action_repository.update_status(
-                action.id, "failed", result={"message": f"ClickUp task created but reply failed: {exc}", "error": True}
-            )
-
-        # Step 4: persist ClickUp URL to Freshservice custom field
-        if task_url:
-            try:
-                await self._freshservice_adapter.set_clickup_url(action.ticket_id, task_url)
-            except Exception:  # noqa: BLE001
-                pass  # non-fatal — task and reply already succeeded
-
         return await self._action_repository.update_status(
             action.id,
             "completed",
-            result={"clickup_task": clickup_task, "reply": reply_result},
+            result={"prepared": prepare_result.data, "next_action_id": follow_up.id},
         )
 
     async def _resolve_freshservice_ticket(self, action: AssistantAction) -> AssistantAction:
@@ -338,6 +335,73 @@ class AssistantActionExecutor:
             action.id, "completed", result={"response": response}
         )
 
+    async def _link_existing_clickup_task(self, action: AssistantAction) -> AssistantAction:
+        """Link an existing ClickUp task to a Freshservice ticket without creating a new one.
+
+        Sets the clickup_url custom field on the ticket, persists the integration link,
+        and optionally sends a public reply if payload contains a 'body' field.
+
+        Parameters:
+            action: Approved link_existing_clickup_task action. Payload must contain
+                    'task_url'. Optional 'task_id' (extracted from URL if absent)
+                    and 'body' (reply text to the customer).
+
+        Returns:
+            Completed action with link and optional reply result.
+
+        Edge cases:
+            If a link already exists for this ticket it is reused and no duplicate is stored.
+            Reply is skipped when 'body' is empty or absent.
+        """
+        assert action.ticket_id is not None
+        task_url = str(action.payload.get("task_url", "")).strip()
+        if not task_url:
+            return await self._action_repository.update_status(
+                action.id, "failed", result={"message": "task_url is required", "error": True}
+            )
+
+        task_id = str(action.payload.get("task_id", "")).strip() or _extract_task_id(task_url)
+
+        result: dict = {"task_url": task_url, "task_id": task_id}
+
+        if self._integration_link_repository is not None:
+            existing = await self._integration_link_repository.find_link(
+                "fresh", action.ticket_id, RelationType.TICKET_TO_TASK
+            )
+            if not existing:
+                link_id = await self._integration_link_repository.save_link(
+                    IntegrationLinkDocument(
+                        source_system="fresh",
+                        source_id=action.ticket_id,
+                        target_system="clickup",
+                        target_id=task_id,
+                        target_url=task_url,
+                        relation_type=RelationType.TICKET_TO_TASK,
+                    )
+                )
+                result["link_id"] = link_id
+            else:
+                result["link_id"] = str(existing.get("id", ""))
+                result["link_reused"] = True
+
+        try:
+            await self._freshservice_adapter.set_clickup_url(action.ticket_id, task_url)
+        except Exception as exc:  # noqa: BLE001
+            result["clickup_url_error"] = str(exc)
+
+        body = str(action.payload.get("body", "")).strip()
+        if body:
+            reply_body = f"{body}\n\nTarea en ClickUp: {task_url}" if task_url not in body else body
+            try:
+                reply_result = await self._freshservice_adapter.reply_ticket(
+                    ReplyTicketInput(ticket_id=action.ticket_id, body=reply_body)
+                )
+                result["reply"] = reply_result
+            except Exception as exc:  # noqa: BLE001
+                result["reply_error"] = str(exc)
+
+        return await self._action_repository.update_status(action.id, "completed", result=result)
+
     async def _reply_freshservice_ticket(self, action: AssistantAction) -> AssistantAction:
         """Send an approved public reply to a Freshservice ticket.
 
@@ -365,3 +429,18 @@ class AssistantActionExecutor:
         return await self._action_repository.update_status(
             action.id, "completed", result={"response": response}
         )
+
+
+
+def _extract_task_id(task_url: str) -> str:
+    """Extract the ClickUp task ID from a URL.
+
+    ClickUp task URLs end with the task ID as the last path segment,
+    e.g. https://app.clickup.com/t/abc123xyz → "abc123xyz".
+    Falls back to the raw URL when parsing fails.
+    """
+    try:
+        path = urlparse(task_url).path.rstrip("/")
+        return path.split("/")[-1] or task_url
+    except Exception:  # noqa: BLE001
+        return task_url

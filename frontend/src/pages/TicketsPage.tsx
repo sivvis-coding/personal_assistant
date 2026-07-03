@@ -1,10 +1,15 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Box,
+  Button,
   Checkbox,
   Chip,
   CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   FormControl,
   FormControlLabel,
   IconButton,
@@ -12,6 +17,9 @@ import {
   MenuItem,
   Paper,
   Select,
+  Snackbar,
+  Alert,
+  Stack,
   Table,
   TableBody,
   TableCell,
@@ -25,8 +33,18 @@ import {
 } from '@mui/material';
 import FilterListIcon from '@mui/icons-material/FilterList';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
+import SyncIcon from '@mui/icons-material/Sync';
+import AddCircleOutlineIcon from '@mui/icons-material/AddCircleOutline';
+import ReplyIcon from '@mui/icons-material/Reply';
+import TaskIcon from '@mui/icons-material/Task';
+import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
+import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
 import { listTickets } from '../api/tickets';
+import { createAssistantAction } from '../api/assistant';
+import type { AssistantActionType } from '../types/assistant';
 import type { SlaStatus, Ticket, TicketPriority, TicketStatus } from '../types/ticket';
+
+// ─── types ────────────────────────────────────────────────────────────────────
 
 interface Filters {
   search: string;
@@ -39,70 +57,202 @@ interface Filters {
 type SortField = 'id' | 'subject' | 'status' | 'priority' | 'requester';
 type SortDirection = 'asc' | 'desc';
 
+type QuickActionType = 'reply' | 'task' | 'resolve' | 'request_info';
+
+interface QuickActionState {
+  ticket: Ticket;
+  type: QuickActionType;
+}
+
+// ─── color helpers ────────────────────────────────────────────────────────────
+
 const statusOrder: TicketStatus[] = ['open', 'pending', 'waiting on customer', 'waiting on third party', 'resolved', 'closed', 'unknown'];
 const priorityOrder: TicketPriority[] = ['urgent', 'high', 'medium', 'low', 'unknown'];
 
 function statusColor(status: TicketStatus): 'success' | 'warning' | 'info' | 'default' | 'error' {
   switch (status) {
-    case 'open':
-      return 'success';
+    case 'open': return 'success';
     case 'pending':
     case 'waiting on customer':
-    case 'waiting on third party':
-      return 'warning';
-    case 'resolved':
-      return 'info';
-    case 'closed':
-      return 'default';
-    default:
-      return 'error';
+    case 'waiting on third party': return 'warning';
+    case 'resolved': return 'info';
+    case 'closed': return 'default';
+    default: return 'error';
   }
 }
 
 function priorityColor(priority: TicketPriority): 'error' | 'warning' | 'info' | 'default' {
   switch (priority) {
-    case 'urgent':
-      return 'error';
-    case 'high':
-      return 'warning';
-    case 'medium':
-      return 'info';
-    default:
-      return 'default';
+    case 'urgent': return 'error';
+    case 'high': return 'warning';
+    case 'medium': return 'info';
+    default: return 'default';
   }
 }
 
 function slaColor(status: SlaStatus): 'success' | 'warning' | 'error' | 'default' {
   switch (status) {
-    case 'ok':
-      return 'success';
-    case 'at_risk':
-      return 'warning';
-    case 'breached':
-      return 'error';
-    default:
-      return 'default';
+    case 'ok': return 'success';
+    case 'at_risk': return 'warning';
+    case 'breached': return 'error';
+    default: return 'default';
   }
 }
 
-/**
- * Render the tickets list page with filters and sorting.
- *
- * Parameters:
- *   None.
- *
- * Returns:
- *   JSX tickets page.
- *
- * Edge cases:
- *   Backend excludes closed tickets by default.
- */
+// ─── quick action dialog ──────────────────────────────────────────────────────
+
+const ACTION_META: Record<QuickActionType, { label: string; icon: React.ReactNode; actionType: AssistantActionType; hasBody: boolean; bodyLabel: string; bodyPlaceholder: string }> = {
+  reply: {
+    label: 'Responder al cliente',
+    icon: <ReplyIcon fontSize="small" />,
+    actionType: 'reply_freshservice_ticket',
+    hasBody: true,
+    bodyLabel: 'Cuerpo de la respuesta',
+    bodyPlaceholder: 'Escribe la respuesta pública que verá el cliente...',
+  },
+  task: {
+    label: 'Crear tarea ClickUp',
+    icon: <TaskIcon fontSize="small" />,
+    actionType: 'prepare_clickup_task',
+    hasBody: true,
+    bodyLabel: 'Descripción de la tarea',
+    bodyPlaceholder: 'Describe el trabajo a realizar en ClickUp...',
+  },
+  resolve: {
+    label: 'Marcar como resuelto',
+    icon: <CheckCircleOutlineIcon fontSize="small" />,
+    actionType: 'resolve_freshservice_ticket',
+    hasBody: false,
+    bodyLabel: '',
+    bodyPlaceholder: '',
+  },
+  request_info: {
+    label: 'Pedir información',
+    icon: <HelpOutlineIcon fontSize="small" />,
+    actionType: 'request_info_freshservice_ticket',
+    hasBody: true,
+    bodyLabel: '¿Qué información necesitas?',
+    bodyPlaceholder: 'Explica qué necesitas saber del cliente para avanzar...',
+  },
+};
+
+interface QuickActionDialogProps {
+  state: QuickActionState | null;
+  onClose: () => void;
+  onSuccess: () => void;
+}
+
+function QuickActionDialog({ state, onClose, onSuccess }: QuickActionDialogProps) {
+  const [body, setBody] = useState('');
+  const [resolveStatus, setResolveStatus] = useState<'resolved' | 'closed'>('resolved');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (state) { setBody(''); setError(null); setResolveStatus('resolved'); }
+  }, [state]);
+
+  if (!state) return null;
+  const meta = ACTION_META[state.type];
+  const ticket = state.ticket;
+  const actionType = state.type;
+
+  async function handleSubmit() {
+    setSubmitting(true);
+    setError(null);
+    try {
+      let payload: Record<string, unknown> = {};
+      if (actionType === 'reply') payload = { body };
+      else if (actionType === 'task') payload = { description: body, ticket_id: ticket.id };
+      else if (actionType === 'resolve') payload = { status: resolveStatus };
+      else if (actionType === 'request_info') payload = { body };
+
+      await createAssistantAction({
+        action_type: meta.actionType,
+        title: `${meta.label} — ticket #${ticket.id}`,
+        description: `${meta.label} para "${ticket.subject}"`,
+        ticket_id: ticket.id,
+        payload,
+      });
+      onSuccess();
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error al crear la acción');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const canSubmit = state.type === 'resolve' || body.trim().length > 0;
+
+  return (
+    <Dialog open={true} onClose={onClose} maxWidth="sm" fullWidth>
+      <DialogTitle>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          {meta.icon}
+          {meta.label}
+        </Box>
+        <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+          Ticket #{ticket.id} · {ticket.subject}
+        </Typography>
+      </DialogTitle>
+      <DialogContent>
+        {error ? <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert> : null}
+
+        {state.type === 'resolve' ? (
+          <FormControl fullWidth size="small">
+            <InputLabel>Estado final</InputLabel>
+            <Select
+              value={resolveStatus}
+              label="Estado final"
+              onChange={(e) => setResolveStatus(e.target.value as 'resolved' | 'closed')}
+            >
+              <MenuItem value="resolved">Resuelto</MenuItem>
+              <MenuItem value="closed">Cerrado</MenuItem>
+            </Select>
+          </FormControl>
+        ) : (
+          <TextField
+            autoFocus
+            fullWidth
+            multiline
+            minRows={4}
+            label={meta.bodyLabel}
+            placeholder={meta.bodyPlaceholder}
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+            size="small"
+          />
+        )}
+
+        <Typography variant="caption" color="text.secondary" sx={{ mt: 1.5, display: 'block' }}>
+          Se creará una acción pendiente. Deberás aprobarla antes de que se ejecute.
+        </Typography>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose} disabled={submitting}>Cancelar</Button>
+        <Button
+          variant="contained"
+          onClick={() => void handleSubmit()}
+          disabled={submitting || !canSubmit}
+          startIcon={submitting ? <CircularProgress size={16} /> : null}
+        >
+          Crear acción pendiente
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+// ─── main page ────────────────────────────────────────────────────────────────
+
 export function TicketsPage() {
   const navigate = useNavigate();
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [source, setSource] = useState<string>('');
   const [scope, setScope] = useState<'mine' | 'all'>('mine');
   const [isLoading, setIsLoading] = useState(true);
+  const [isSyncing, setIsSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [filters, setFilters] = useState<Filters>({
@@ -116,27 +266,38 @@ export function TicketsPage() {
     field: 'id',
     direction: 'desc',
   });
+  const [quickAction, setQuickAction] = useState<QuickActionState | null>(null);
+  const [snackbar, setSnackbar] = useState<string | null>(null);
+  const lastFetchParams = useRef({ scope, includeClosed: filters.includeClosed });
 
-  useEffect(() => {
-    setIsLoading(true);
+  function fetchTickets(forceRefresh = false) {
+    setIsLoading(!forceRefresh);
+    if (forceRefresh) setIsSyncing(true);
     setError(null);
-    listTickets({ scope, includeClosed: filters.includeClosed })
+    lastFetchParams.current = { scope, includeClosed: filters.includeClosed };
+    listTickets({ scope, includeClosed: filters.includeClosed, forceRefresh })
       .then((response) => {
         setTickets(response.items);
         setSource(response.source);
+        if (forceRefresh) setSnackbar(`Sincronizados ${response.items.length} tickets`);
       })
       .catch((caught: Error) => setError(caught.message))
-      .finally(() => setIsLoading(false));
+      .finally(() => { setIsLoading(false); setIsSyncing(false); });
+  }
+
+  useEffect(() => {
+    fetchTickets(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scope, filters.includeClosed]);
 
   const allStatuses = useMemo(
-    () => Array.from(new Set(tickets.map((ticket) => ticket.status))).sort(
+    () => Array.from(new Set(tickets.map((t) => t.status))).sort(
       (a, b) => statusOrder.indexOf(a) - statusOrder.indexOf(b)
     ),
     [tickets]
   );
   const allPriorities = useMemo(
-    () => Array.from(new Set(tickets.map((ticket) => ticket.priority))).sort(
+    () => Array.from(new Set(tickets.map((t) => t.priority))).sort(
       (a, b) => priorityOrder.indexOf(a) - priorityOrder.indexOf(b)
     ),
     [tickets]
@@ -144,85 +305,51 @@ export function TicketsPage() {
 
   const filteredTickets = useMemo(() => {
     let result = tickets.filter((ticket) => {
-      const matchesSearch =
-        filters.search === '' ||
-        ticket.subject.toLowerCase().includes(filters.search.toLowerCase()) ||
+      const q = filters.search.toLowerCase();
+      const matchesSearch = !q ||
+        ticket.subject.toLowerCase().includes(q) ||
         ticket.id.includes(filters.search) ||
-        ticket.requester.name.toLowerCase().includes(filters.search.toLowerCase()) ||
-        (ticket.requester.email ?? '').toLowerCase().includes(filters.search.toLowerCase());
-
-      const matchesStatus = filters.statuses.length === 0 || filters.statuses.includes(ticket.status);
-      const matchesPriority = filters.priorities.length === 0 || filters.priorities.includes(ticket.priority);
+        ticket.requester.name.toLowerCase().includes(q) ||
+        (ticket.requester.email ?? '').toLowerCase().includes(q);
+      const matchesStatus = !filters.statuses.length || filters.statuses.includes(ticket.status);
+      const matchesPriority = !filters.priorities.length || filters.priorities.includes(ticket.priority);
       const matchesOverdue = !filters.onlyOverdue || ticket.overdue === true;
-
       return matchesSearch && matchesStatus && matchesPriority && matchesOverdue;
     });
 
     result = [...result].sort((a, b) => {
-      let comparison = 0;
+      let cmp = 0;
       switch (sort.field) {
-        case 'id':
-          comparison = a.id.localeCompare(b.id, undefined, { numeric: true });
-          break;
-        case 'subject':
-          comparison = a.subject.localeCompare(b.subject);
-          break;
-        case 'status':
-          comparison = statusOrder.indexOf(a.status) - statusOrder.indexOf(b.status);
-          break;
-        case 'priority':
-          comparison = priorityOrder.indexOf(a.priority) - priorityOrder.indexOf(b.priority);
-          break;
-        case 'requester':
-          comparison = a.requester.name.localeCompare(b.requester.name);
-          break;
+        case 'id': cmp = a.id.localeCompare(b.id, undefined, { numeric: true }); break;
+        case 'subject': cmp = a.subject.localeCompare(b.subject); break;
+        case 'status': cmp = statusOrder.indexOf(a.status) - statusOrder.indexOf(b.status); break;
+        case 'priority': cmp = priorityOrder.indexOf(a.priority) - priorityOrder.indexOf(b.priority); break;
+        case 'requester': cmp = a.requester.name.localeCompare(b.requester.name); break;
       }
-      return sort.direction === 'asc' ? comparison : -comparison;
+      return sort.direction === 'asc' ? cmp : -cmp;
     });
-
     return result;
   }, [tickets, filters, sort]);
 
-  function toggleSort(field: SortField): void {
-    setSort((current) => ({
-      field,
-      direction: current.field === field && current.direction === 'asc' ? 'desc' : 'asc',
-    }));
+  function toggleSort(field: SortField) {
+    setSort((c) => ({ field, direction: c.field === field && c.direction === 'asc' ? 'desc' : 'asc' }));
   }
 
-  function toggleStatus(status: TicketStatus): void {
-    setFilters((current) => ({
-      ...current,
-      statuses: current.statuses.includes(status)
-        ? current.statuses.filter((s) => s !== status)
-        : [...current.statuses, status],
-    }));
+  function toggleStatus(s: TicketStatus) {
+    setFilters((c) => ({ ...c, statuses: c.statuses.includes(s) ? c.statuses.filter((x) => x !== s) : [...c.statuses, s] }));
   }
 
-  function togglePriority(priority: TicketPriority): void {
-    setFilters((current) => ({
-      ...current,
-      priorities: current.priorities.includes(priority)
-        ? current.priorities.filter((p) => p !== priority)
-        : [...current.priorities, priority],
-    }));
+  function togglePriority(p: TicketPriority) {
+    setFilters((c) => ({ ...c, priorities: c.priorities.includes(p) ? c.priorities.filter((x) => x !== p) : [...c.priorities, p] }));
   }
 
   return (
     <Box>
-      <Typography variant="h4" gutterBottom>
-        Tickets
-      </Typography>
-
-      <Box sx={{ display: 'flex', gap: 2, alignItems: 'center', mb: 2, flexWrap: 'wrap' }}>
+      {/* ── toolbar ── */}
+      <Box sx={{ display: 'flex', gap: 1.5, alignItems: 'center', mb: 2, flexWrap: 'wrap' }}>
         <FormControl sx={{ minWidth: 160 }} size="small">
-          <InputLabel id="ticket-scope-label">Vista</InputLabel>
-          <Select
-            labelId="ticket-scope-label"
-            value={scope}
-            label="Vista"
-            onChange={(event) => setScope(event.target.value as 'mine' | 'all')}
-          >
+          <InputLabel>Vista</InputLabel>
+          <Select value={scope} label="Vista" onChange={(e) => setScope(e.target.value as 'mine' | 'all')}>
             <MenuItem value="mine">Asignados a mí</MenuItem>
             <MenuItem value="all">Todos</MenuItem>
           </Select>
@@ -232,120 +359,74 @@ export function TicketsPage() {
           size="small"
           placeholder="Buscar por ID, asunto o solicitante..."
           value={filters.search}
-          onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value }))}
+          onChange={(e) => setFilters((c) => ({ ...c, search: e.target.value }))}
           sx={{ minWidth: 280 }}
         />
 
         <FormControlLabel
-          control={
-            <Checkbox
-              checked={filters.includeClosed}
-              onChange={(event) =>
-                setFilters((current) => ({ ...current, includeClosed: event.target.checked }))
-              }
-            />
-          }
+          control={<Checkbox checked={filters.includeClosed} onChange={(e) => setFilters((c) => ({ ...c, includeClosed: e.target.checked }))} />}
           label="Incluir cerrados"
         />
-
         <FormControlLabel
-          control={
-            <Checkbox
-              checked={filters.onlyOverdue}
-              onChange={(event) =>
-                setFilters((current) => ({ ...current, onlyOverdue: event.target.checked }))
-              }
-            />
-          }
+          control={<Checkbox checked={filters.onlyOverdue} onChange={(e) => setFilters((c) => ({ ...c, onlyOverdue: e.target.checked }))} />}
           label="Solo vencidos"
         />
 
-        <IconButton color="primary" onClick={() => setShowFilters((value) => !value)}>
-          <FilterListIcon />
-        </IconButton>
+        <Tooltip title="Filtros avanzados">
+          <IconButton color={showFilters ? 'primary' : 'default'} onClick={() => setShowFilters((v) => !v)}>
+            <FilterListIcon />
+          </IconButton>
+        </Tooltip>
+
+        <Tooltip title="Sincronizar con Freshservice">
+          <span>
+            <IconButton onClick={() => fetchTickets(true)} disabled={isSyncing}>
+              <SyncIcon sx={{ animation: isSyncing ? 'spin 1s linear infinite' : 'none', '@keyframes spin': { from: { transform: 'rotate(0deg)' }, to: { transform: 'rotate(360deg)' } } }} />
+            </IconButton>
+          </span>
+        </Tooltip>
 
         <Typography variant="body2" color="text.secondary" sx={{ ml: 'auto' }}>
-          {filteredTickets.length} de {tickets.length} · Fuente: {source || '-'}
+          {filteredTickets.length} de {tickets.length} · {source || '-'}
         </Typography>
       </Box>
 
+      {/* ── advanced filters ── */}
       {showFilters ? (
         <Paper sx={{ p: 2, mb: 2 }}>
-          <Typography variant="subtitle2" gutterBottom>
-            Estados
-          </Typography>
-          <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mb: 2 }}>
-            {allStatuses.map((status) => (
-              <Chip
-                key={status}
-                label={status}
-                color={statusColor(status)}
-                variant={filters.statuses.includes(status) ? 'filled' : 'outlined'}
-                onClick={() => toggleStatus(status)}
-                clickable
-              />
+          <Typography variant="subtitle2" gutterBottom>Estados</Typography>
+          <Stack direction="row" spacing={1} flexWrap="wrap" mb={2}>
+            {allStatuses.map((s) => (
+              <Chip key={s} label={s} color={statusColor(s)} variant={filters.statuses.includes(s) ? 'filled' : 'outlined'} onClick={() => toggleStatus(s)} clickable />
             ))}
-          </Box>
-          <Typography variant="subtitle2" gutterBottom>
-            Prioridades
-          </Typography>
-          <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-            {allPriorities.map((priority) => (
-              <Chip
-                key={priority}
-                label={priority}
-                color={priorityColor(priority)}
-                variant={filters.priorities.includes(priority) ? 'filled' : 'outlined'}
-                onClick={() => togglePriority(priority)}
-                clickable
-              />
+          </Stack>
+          <Typography variant="subtitle2" gutterBottom>Prioridades</Typography>
+          <Stack direction="row" spacing={1} flexWrap="wrap">
+            {allPriorities.map((p) => (
+              <Chip key={p} label={p} color={priorityColor(p)} variant={filters.priorities.includes(p) ? 'filled' : 'outlined'} onClick={() => togglePriority(p)} clickable />
             ))}
-          </Box>
+          </Stack>
         </Paper>
       ) : null}
 
       {isLoading ? (
-        <Box sx={{ display: 'flex', justifyContent: 'center', mt: 8 }}>
-          <CircularProgress />
-        </Box>
+        <Box sx={{ display: 'flex', justifyContent: 'center', mt: 8 }}><CircularProgress /></Box>
       ) : null}
 
-      {error ? (
-        <Typography color="error" sx={{ mt: 2 }}>
-          {error}
-        </Typography>
-      ) : null}
+      {error ? <Alert severity="error" sx={{ mt: 2 }}>{error}</Alert> : null}
 
       {!isLoading && !error ? (
         <TableContainer component={Paper}>
-          <Table>
+          <Table size="small">
             <TableHead>
               <TableRow>
-                <TableCell>
-                  <TableSortLabel active={sort.field === 'id'} direction={sort.direction} onClick={() => toggleSort('id')}>
-                    ID
-                  </TableSortLabel>
-                </TableCell>
-                <TableCell>
-                  <TableSortLabel active={sort.field === 'subject'} direction={sort.direction} onClick={() => toggleSort('subject')}>
-                    Asunto
-                  </TableSortLabel>
-                </TableCell>
-                <TableCell>
-                  <TableSortLabel active={sort.field === 'status'} direction={sort.direction} onClick={() => toggleSort('status')}>
-                    Estado
-                  </TableSortLabel>
-                </TableCell>
-                <TableCell>
-                  <TableSortLabel active={sort.field === 'priority'} direction={sort.direction} onClick={() => toggleSort('priority')}>
-                    Prioridad
-                  </TableSortLabel>
-                </TableCell>
-                <TableCell>
-                  <TableSortLabel active={sort.field === 'requester'} direction={sort.direction} onClick={() => toggleSort('requester')}>
-                    Solicitante
-                  </TableSortLabel>
-                </TableCell>
+                {(['id', 'subject', 'status', 'priority', 'requester'] as SortField[]).map((field) => (
+                  <TableCell key={field}>
+                    <TableSortLabel active={sort.field === field} direction={sort.direction} onClick={() => toggleSort(field)}>
+                      {{ id: 'ID', subject: 'Asunto', status: 'Estado', priority: 'Prioridad', requester: 'Solicitante' }[field]}
+                    </TableSortLabel>
+                  </TableCell>
+                ))}
                 <TableCell>SLA</TableCell>
                 <TableCell align="right">Acciones</TableCell>
               </TableRow>
@@ -354,7 +435,7 @@ export function TicketsPage() {
               {filteredTickets.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={7} align="center">
-                    <Typography color="text.secondary">No hay tickets que coincidan.</Typography>
+                    <Typography color="text.secondary" sx={{ py: 3 }}>No hay tickets que coincidan.</Typography>
                   </TableCell>
                 </TableRow>
               ) : (
@@ -363,60 +444,63 @@ export function TicketsPage() {
                     key={ticket.id}
                     hover
                     onClick={() => navigate(`/tickets/${ticket.id}`)}
-                    sx={{ cursor: 'pointer' }}
+                    sx={{ cursor: 'pointer', '&:hover .row-actions': { opacity: 1 } }}
                   >
-                    <TableCell>{ticket.id}</TableCell>
-                    <TableCell>{ticket.subject}</TableCell>
+                    <TableCell sx={{ fontFamily: 'monospace', fontSize: 12, whiteSpace: 'nowrap' }}>
+                      {ticket.id}
+                    </TableCell>
+                    <TableCell sx={{ maxWidth: 320 }}>
+                      <Typography variant="body2" noWrap>{ticket.subject}</Typography>
+                    </TableCell>
                     <TableCell>
                       <Chip label={ticket.status} color={statusColor(ticket.status)} size="small" />
                     </TableCell>
                     <TableCell>
-                      <Chip label={ticket.priority} color={priorityColor(ticket.priority)} size="small" />
+                      <Chip label={ticket.priority} color={priorityColor(ticket.priority)} size="small" variant="outlined" />
                     </TableCell>
                     <TableCell>
-                      {ticket.requester.name}
+                      <Typography variant="body2" noWrap>{ticket.requester.name}</Typography>
                       {ticket.requester.email ? (
-                        <Typography variant="caption" color="text.secondary" display="block">
-                          {ticket.requester.email}
-                        </Typography>
+                        <Typography variant="caption" color="text.disabled" display="block" noWrap>{ticket.requester.email}</Typography>
                       ) : null}
                     </TableCell>
                     <TableCell>
                       {ticket.sla && ticket.sla.status !== 'none' ? (
-                        <Chip
-                          label={ticket.sla.status}
-                          color={slaColor(ticket.sla.status)}
-                          size="small"
-                        />
+                        <Chip label={ticket.sla.status} color={slaColor(ticket.sla.status)} size="small" />
                       ) : null}
                     </TableCell>
                     <TableCell align="right">
-                      <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 0.5 }}>
+                      <Box className="row-actions" sx={{ display: 'flex', justifyContent: 'flex-end', gap: 0.5, opacity: 0, transition: 'opacity 0.15s' }}>
+                        <Tooltip title="Responder">
+                          <IconButton size="small" color="primary" onClick={(e) => { e.stopPropagation(); setQuickAction({ ticket, type: 'reply' }); }}>
+                            <ReplyIcon fontSize="small" />
+                          </IconButton>
+                        </Tooltip>
+                        <Tooltip title="Crear tarea ClickUp">
+                          <IconButton size="small" color="secondary" onClick={(e) => { e.stopPropagation(); setQuickAction({ ticket, type: 'task' }); }}>
+                            <TaskIcon fontSize="small" />
+                          </IconButton>
+                        </Tooltip>
+                        <Tooltip title="Pedir información">
+                          <IconButton size="small" onClick={(e) => { e.stopPropagation(); setQuickAction({ ticket, type: 'request_info' }); }}>
+                            <HelpOutlineIcon fontSize="small" />
+                          </IconButton>
+                        </Tooltip>
+                        <Tooltip title="Resolver">
+                          <IconButton size="small" color="success" onClick={(e) => { e.stopPropagation(); setQuickAction({ ticket, type: 'resolve' }); }}>
+                            <CheckCircleOutlineIcon fontSize="small" />
+                          </IconButton>
+                        </Tooltip>
                         {ticket.clickup_url ? (
                           <Tooltip title="Ver en ClickUp">
-                            <IconButton
-                              size="small"
-                              component="a"
-                              href={ticket.clickup_url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              onClick={(event) => event.stopPropagation()}
-                              color="secondary"
-                            >
+                            <IconButton size="small" component="a" href={ticket.clickup_url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}>
                               <OpenInNewIcon fontSize="small" />
                             </IconButton>
                           </Tooltip>
                         ) : null}
                         {ticket.url ? (
                           <Tooltip title="Abrir en Freshservice">
-                            <IconButton
-                              size="small"
-                              component="a"
-                              href={ticket.url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              onClick={(event) => event.stopPropagation()}
-                            >
+                            <IconButton size="small" component="a" href={ticket.url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}>
                               <OpenInNewIcon fontSize="small" />
                             </IconButton>
                           </Tooltip>
@@ -430,6 +514,23 @@ export function TicketsPage() {
           </Table>
         </TableContainer>
       ) : null}
+
+      <QuickActionDialog
+        state={quickAction}
+        onClose={() => setQuickAction(null)}
+        onSuccess={() => setSnackbar('Acción pendiente creada. Apruébala en el panel de acciones.')}
+      />
+
+      <Snackbar
+        open={snackbar !== null}
+        autoHideDuration={4000}
+        onClose={() => setSnackbar(null)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      >
+        <Alert severity="success" onClose={() => setSnackbar(null)} sx={{ width: '100%' }}>
+          {snackbar}
+        </Alert>
+      </Snackbar>
     </Box>
   );
 }

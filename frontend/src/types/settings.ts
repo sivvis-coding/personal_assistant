@@ -23,6 +23,8 @@ export interface AppSettings {
   clickup_api_key: string;
   clickup_team_id: string;
   clickup_lists: ClickUpListConfig[];
+  clickup_personal_list_id: string;
+  clickup_personal_list_name: string;
   agent_system_prompt: string;
   openai_api_key: string;
   openai_model: string;

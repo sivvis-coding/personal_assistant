@@ -4,11 +4,12 @@ from datetime import date
 from typing import Any
 
 from app.agents.base import AgentContext, AgentResult, BaseAgent
-from app.agents.time.extractor import TimeAgentParameterExtractor, TimeEntryParameters
-from app.agents.time.schemas import TimeAgentResult, TimeEntryActionPayload
+from app.agents.time.llm_extractor import DailyNarrativeExtractor
+from app.agents.time.schemas import ActivityResolution, TimeAgentResult, TimeEntryActionPayload, TimeEntryParameters
 from app.core.events.base import DomainEvent
 from app.core.memory.interface import MemoryConfig, MemoryFacade
 from app.domain.assistant.events import TimeTrackingPrepared, TimeTrackingRequested
+from app.services.settings_service import SettingsService
 from app.tools.base import ToolResult
 
 TIME_TRACKING_KEYWORDS = {
@@ -26,14 +27,20 @@ TIME_TRACKING_KEYWORDS = {
 
 
 class TimeAgent(BaseAgent):
-    """Agent that processes natural language time tracking requests.
+    """Agent that turns a free-text daily narrative into ClickUp time entries.
 
-    The agent can be used directly through `process()` for synchronous chat
-    responses or through `handle()` for event-driven flows.
+    A single message may describe several activities for different clients.
+    The agent extracts each activity via an LLM, resolves the client per
+    activity against the configured personal ClickUp list, and returns one
+    ActivityResolution per activity — ready ones can be proposed as pending
+    `save_time_entry` actions, ambiguous ones need a follow-up client
+    confirmation (see `resolve_pending_activity`).
 
     Parameters:
         memory_facade: Memory facade factory.
-        extractor: Optional parameter extractor for deterministic tests.
+        narrative_extractor: LLM-based extractor that segments a message into activities.
+        settings_service: Service used to resolve the configured personal ClickUp list.
+        clickup_time_tool: Optional fallback tool instance when no AgentContext is provided.
 
     Returns:
         Time agent instance.
@@ -46,15 +53,17 @@ class TimeAgent(BaseAgent):
     def __init__(
         self,
         memory_facade: MemoryFacade,
-        clickup_time_tool = None,
-        extractor: TimeAgentParameterExtractor | None = None,
+        narrative_extractor: DailyNarrativeExtractor,
+        settings_service: SettingsService,
+        clickup_time_tool=None,
     ) -> None:
         super().__init__(
             agent_id=self.agent_id,
             memory_config=MemoryConfig(short_term=True, long_term=True),
             memory_facade=memory_facade,
         )
-        self._extractor = extractor or TimeAgentParameterExtractor()
+        self._narrative_extractor = narrative_extractor
+        self._settings_service = settings_service
         self._clickup_time_tool = clickup_time_tool
 
     @staticmethod
@@ -65,18 +74,13 @@ class TimeAgent(BaseAgent):
 
     async def _handle(self, event: DomainEvent, context: AgentContext) -> AgentResult:
         if isinstance(event, TimeTrackingRequested):
-            result = await self.process(event.message, event.confirmed_client, context)
+            result = await self.process(event.message, context)
             return AgentResult(
                 events=[
                     TimeTrackingPrepared(
                         conversation_id=event.conversation_id,
                         success=result.success,
                         answer=result.answer,
-                        preview=result.preview,
-                        action_payload=result.action_payload,
-                        needs_clarification=result.needs_clarification,
-                        candidate_clients=result.candidate_clients,
-                        metadata=event.metadata,
                     )
                 ],
                 summary="Processed time tracking request",
@@ -86,45 +90,126 @@ class TimeAgent(BaseAgent):
     async def process(
         self,
         message: str,
-        confirmed_client: str | None = None,
         context: AgentContext | None = None,
     ) -> TimeAgentResult:
-        """Process a user message and return a time agent result.
+        """Process a daily narrative and return one resolution per detected activity.
 
         Parameters:
-            message: Natural language time tracking request.
-            confirmed_client: Optional client name confirmed by the user.
+            message: Natural language daily narrative in Spanish, possibly describing
+                several activities.
             context: Optional agent context with tools.
 
         Returns:
-            TimeAgentResult compatible with existing assistant services.
-        """
-        parameters = self._extractor.extract(message)
+            TimeAgentResult with one ActivityResolution per detected activity.
 
+        Edge cases:
+            Returns a single failed result (no activities) when the personal ClickUp
+            list is not configured or the narrative has no identifiable work.
+        """
+        list_id = await self._resolve_personal_list_id()
+        if not list_id:
+            return TimeAgentResult(
+                success=False,
+                answer=(
+                    "No tengo configurada tu lista personal de ClickUp. "
+                    "Ve a Configuración y selecciona una en 'Lista personal (imputación de horas)'."
+                ),
+                activities=[],
+            )
+
+        extracted = await self._narrative_extractor.extract(message, today=date.today())
+        if not extracted:
+            return TimeAgentResult(
+                success=False,
+                answer=(
+                    "No he identificado ninguna actividad de trabajo en tu mensaje. "
+                    "Cuéntame qué hiciste, con cuánto tiempo y para qué cliente."
+                ),
+                activities=[],
+            )
+
+        resolutions = [
+            await self._resolve_activity(parameters, None, list_id, context) for parameters in extracted
+        ]
+        return self._combine(resolutions, list_id)
+
+    async def resolve_pending_activity(
+        self,
+        parameters: TimeEntryParameters,
+        confirmed_client: str,
+        list_id: str,
+        context: AgentContext | None = None,
+    ) -> ActivityResolution:
+        """Continue a single previously-extracted activity with a confirmed client.
+
+        Parameters:
+            parameters: Time entry parameters extracted earlier for this activity.
+            confirmed_client: Client name confirmed by the user for this activity.
+            list_id: Personal ClickUp list ID to resolve the client field against.
+            context: Optional agent context with tools.
+
+        Returns:
+            Resolution for this single activity, without re-running extraction.
+        """
+        return await self._resolve_activity(parameters, confirmed_client, list_id, context)
+
+    def _combine(self, resolutions: list[ActivityResolution], list_id: str) -> TimeAgentResult:
+        """Combine per-activity resolutions into one overall result and answer."""
+        resolved = [r for r in resolutions if r.success and not r.needs_clarification]
+        pending = [r for r in resolutions if r.needs_clarification]
+        incomplete = [r for r in resolutions if not r.success and not r.needs_clarification]
+
+        lines: list[str] = []
+        if resolved:
+            summary = "; ".join(r.answer for r in resolved)
+            lines.append(f"He preparado {len(resolved)} imputación(es): {summary}")
+        if incomplete:
+            lines.append(" ".join(r.answer for r in incomplete))
+        if pending:
+            lines.append(pending[0].answer)
+            if len(pending) > 1:
+                lines.append(f"(quedan {len(pending) - 1} actividad(es) más por confirmar)")
+        if not lines:
+            lines.append("No he podido procesar ninguna actividad.")
+
+        return TimeAgentResult(success=bool(resolved), answer=" ".join(lines), activities=resolutions, list_id=list_id)
+
+    async def _resolve_personal_list_id(self) -> str:
+        """Return the configured personal ClickUp list ID, or empty when unset."""
+        app_settings = await self._settings_service.get_settings()
+        return app_settings.clickup_personal_list_id
+
+    async def _resolve_activity(
+        self,
+        parameters: TimeEntryParameters,
+        confirmed_client: str | None,
+        list_id: str,
+        context: AgentContext | None,
+    ) -> ActivityResolution:
+        """Resolve a single activity: validate completeness, then resolve its client."""
         if confirmed_client is not None:
             parameters.client_name = confirmed_client
 
         if not parameters.is_complete():
             missing = parameters.missing_fields()
-            return TimeAgentResult(
+            label = parameters.task_name or parameters.description or "una actividad"
+            return ActivityResolution(
                 success=False,
-                answer=f"Necesito más datos para imputar el tiempo. Falta: {', '.join(missing)}.",
-                needs_clarification=True,
-                candidate_clients=[],
+                answer=f"Para '{label}' necesito más datos: {', '.join(missing)}.",
+                parameters=parameters,
             )
 
-        if context is not None:
-            clarification = await self._resolve_client(parameters, context)
-            if clarification is not None:
-                return TimeAgentResult(**clarification)
+        clarification = await self._resolve_client(parameters, list_id, context)
+        if clarification is not None:
+            return ActivityResolution(parameters=parameters, **clarification)
 
-        result = await self._build_success_result(parameters, context)
-        return TimeAgentResult(**result)
+        return await self._build_success_result(parameters, list_id, context)
 
     async def _resolve_client(
         self,
         parameters: TimeEntryParameters,
-        context: AgentContext,
+        list_id: str,
+        context: AgentContext | None,
     ) -> dict[str, Any] | None:
         """Resolve the client name using the clickup_time tool.
 
@@ -138,7 +223,7 @@ class TimeAgent(BaseAgent):
             return None
 
         tool = self._get_clickup_time_tool(context)
-        result: ToolResult = await tool.execute(operation="get_clients")
+        result: ToolResult = await tool.execute(operation="get_clients", list_id=list_id)
         if not result.success or result.data is None:
             return None
 
@@ -149,24 +234,35 @@ class TimeAgent(BaseAgent):
         best_name, best_score = self._rank_client(requested_client, available_clients)
         exact_threshold = 0.85
         candidate_threshold = 0.4
+        task_label = parameters.task_name or "esta actividad"
 
         if best_score >= exact_threshold:
             parameters.client_name = best_name
             return None
 
-        candidates = [name for name, score in self._rank_all_clients(requested_client, available_clients) if score >= candidate_threshold][:5]
+        candidates = [
+            name
+            for name, score in self._rank_all_clients(requested_client, available_clients)
+            if score >= candidate_threshold
+        ][:5]
         if candidates:
             candidates_text = ", ".join(f"'{name}'" for name in candidates)
             return {
                 "success": False,
-                "answer": f"No encontré '{requested_client}' exactamente. ¿Te refieres a alguno de estos: {candidates_text}? Responde con el nombre correcto.",
+                "answer": (
+                    f"Para '{task_label}' no encontré el cliente '{requested_client}' exactamente. "
+                    f"¿Te refieres a alguno de estos: {candidates_text}? Responde con el nombre correcto."
+                ),
                 "needs_clarification": True,
                 "candidate_clients": candidates,
             }
 
         return {
             "success": False,
-            "answer": f"No encontré '{requested_client}' en la lista de clientes de ClickUp. ¿Para qué cliente quieres imputar el tiempo?",
+            "answer": (
+                f"Para '{task_label}' no encontré '{requested_client}' en la lista de clientes de ClickUp. "
+                "¿Para qué cliente es esta actividad?"
+            ),
             "needs_clarification": True,
             "candidate_clients": [],
         }
@@ -210,9 +306,10 @@ class TimeAgent(BaseAgent):
     async def _build_success_result(
         self,
         parameters: TimeEntryParameters,
+        list_id: str,
         context: AgentContext | None,
-    ) -> dict[str, Any]:
-        """Build a successful time agent result with preview and action payload."""
+    ) -> ActivityResolution:
+        """Build a successful activity resolution with preview and action payload."""
         start_iso = parameters.build_start_datetime().strftime("%Y-%m-%dT%H:%M:%S")
         end_iso = parameters.build_end_datetime().strftime("%Y-%m-%dT%H:%M:%S")
 
@@ -240,17 +337,14 @@ class TimeAgent(BaseAgent):
         duration = preview.get("duration_minutes", parameters.duration_minutes)
         hours, minutes = divmod(duration, 60)
         client_line = f" para el cliente '{parameters.client_name}'" if parameters.client_name else ""
-        answer = (
-            f"He preparado una imputación de {hours}h {minutes}m{client_line} "
-            f"para '{parameters.task_name}' el {parameters.start_date}. "
-            f"Revisa y aprueba para crear la tarea y registrar el tiempo en ClickUp."
-        )
+        answer = f"'{parameters.task_name}': {hours}h {minutes}m{client_line} el {parameters.start_date}"
 
-        return {
-            "success": True,
-            "answer": answer,
-            "preview": preview,
-            "action_payload": action_payload,
-            "needs_clarification": False,
-            "candidate_clients": [],
-        }
+        return ActivityResolution(
+            success=True,
+            answer=answer,
+            parameters=parameters,
+            preview=preview,
+            action_payload=action_payload,
+            needs_clarification=False,
+            candidate_clients=[],
+        )

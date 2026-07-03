@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.assistant.schemas.actions import AssistantActionCreate
 from app.assistant.schemas.recommendations import PrioritizedWorkPlan, TicketRecommendation
@@ -47,6 +47,8 @@ class ConversationResponse(BaseModel):
     Edge cases:
         When needs_clarification is True, proposed_actions and tool_calls should be empty.
         memory_updates entries without a "key" field are silently ignored.
+        Non-dict recommendations (e.g. plain strings from the LLM) are silently dropped.
+        work_plan dicts missing required fields are coerced to None instead of raising.
     """
 
     answer: str
@@ -57,3 +59,35 @@ class ConversationResponse(BaseModel):
     needs_clarification: bool = False
     clarification_question: str = ""
     memory_updates: list[dict[str, Any]] = Field(default_factory=list)
+    next_suggestions: list[str] = Field(default_factory=list)
+
+    @field_validator("recommendations", mode="before")
+    @classmethod
+    def drop_invalid_recommendations(cls, v: Any) -> list[Any]:
+        if not isinstance(v, list):
+            return []
+        return [item for item in v if isinstance(item, dict)]
+
+    @field_validator("work_plan", mode="before")
+    @classmethod
+    def coerce_invalid_work_plan(cls, v: Any) -> Any:
+        if v is None:
+            return None
+        if not isinstance(v, dict):
+            return None
+        required = {"today_focus", "next_actions", "backlog_candidates", "blocked_items", "not_worth_actioning"}
+        if not required.issubset(v.keys()):
+            return None
+        return v
+
+    @field_validator("next_suggestions", mode="before")
+    @classmethod
+    def sanitize_next_suggestions(cls, v: Any) -> list[Any]:
+        if not isinstance(v, list):
+            return []
+        result = []
+        for item in v:
+            if not isinstance(item, str):
+                continue
+            result.append(item[:80])
+        return result

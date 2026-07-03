@@ -1,8 +1,7 @@
 import { useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation } from 'react-router-dom';
 import {
   AppBar,
-  Box,
   Button,
   Dialog,
   DialogActions,
@@ -13,9 +12,7 @@ import {
   Toolbar,
   Typography,
 } from '@mui/material';
-import AddIcon from '@mui/icons-material/Add';
 import KeyIcon from '@mui/icons-material/Key';
-import { useChatStore } from '../../stores/chatStore';
 
 /**
  * Render the application header with page title and contextual actions.
@@ -31,10 +28,8 @@ import { useChatStore } from '../../stores/chatStore';
  */
 export function Header() {
   const location = useLocation();
-  const navigate = useNavigate();
   const [keyDialogOpen, setKeyDialogOpen] = useState(false);
   const [localKey, setLocalKey] = useState(window.localStorage.getItem('LOCAL_APP_API_KEY') ?? '');
-  const resetChat = useChatStore((state) => state.resetChat);
 
   const pageTitles: Record<string, string> = {
     '/': 'Dashboard',
@@ -46,20 +41,9 @@ export function Header() {
 
   const title = Object.entries(pageTitles).find(([path]) => location.pathname === path || location.pathname.startsWith(`${path}/`))?.[1] ?? 'Local Assistant';
 
-  /**
-   * Persist local API key for backend requests.
-   */
   function saveLocalKey(value: string): void {
     window.localStorage.setItem('LOCAL_APP_API_KEY', value);
     setLocalKey(value);
-  }
-
-  /**
-   * Reset the active chat and navigate to a fresh conversation.
-   */
-  function handleNewChat(): void {
-    resetChat();
-    navigate('/assistant');
   }
 
   return (
@@ -75,16 +59,6 @@ export function Header() {
           <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
             {title}
           </Typography>
-          {location.pathname.startsWith('/assistant') ? (
-            <Button
-              color="inherit"
-              startIcon={<AddIcon />}
-              onClick={handleNewChat}
-              sx={{ mr: 2 }}
-            >
-              Nuevo chat
-            </Button>
-          ) : null}
           <IconButton color="inherit" onClick={() => setKeyDialogOpen(true)}>
             <KeyIcon />
           </IconButton>

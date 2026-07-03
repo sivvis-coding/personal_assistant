@@ -56,7 +56,7 @@ class TicketService:
         return ticket.model_copy(update={"sla": sla_hint, "overdue": overdue})
 
     async def list_tickets(
-        self, scope: TicketListScope = "mine", *, include_closed: bool = False
+        self, scope: TicketListScope = "mine", *, include_closed: bool = False, force_refresh: bool = False
     ) -> TicketListResponse:
         """List tickets and cache them.
 
@@ -71,15 +71,18 @@ class TicketService:
             When Fresh credentials are configured, errors are raised instead of silently returning mock data.
         """
         cache_key = f"{scope}|closed={include_closed}"
-        if self._list_cache is not None:
+        if not force_refresh and self._list_cache is not None:
             cached_key, cached_at, cached_response = self._list_cache
             if cached_key == cache_key and cached_at + timedelta(seconds=self.LIST_CACHE_TTL_SECONDS) >= datetime.now(timezone.utc):
                 logger.info("Cache HIT for key: %s", cache_key)
                 return cached_response.model_copy(update={"source": "cache"})
 
-        logger.info("Cache MISS for key: %s, calling Freshservice", cache_key)
+        if force_refresh:
+            logger.info("Force refresh requested, busting cache for key: %s", cache_key)
+        else:
+            logger.info("Cache MISS for key: %s, calling Freshservice", cache_key)
         async with self._list_lock:
-            if self._list_cache is not None:
+            if not force_refresh and self._list_cache is not None:
                 cached_key, cached_at, cached_response = self._list_cache
                 if cached_key == cache_key and cached_at + timedelta(seconds=self.LIST_CACHE_TTL_SECONDS) >= datetime.now(timezone.utc):
                     logger.info("Cache HIT for key: %s", cache_key)
@@ -166,6 +169,9 @@ class TicketService:
             Description may only exist inside raw payload.
         """
         raw = cached.get("raw") or {}
+        raw_ri = raw.get("requested_items")
+        requested_items = raw_ri if isinstance(raw_ri, list) and raw_ri else None
+        custom_fields = raw.get("custom_fields") or {}
         return Ticket(
             id=str(cached["fresh_ticket_id"]),
             subject=cached.get("subject", "Untitled ticket"),
@@ -173,5 +179,7 @@ class TicketService:
             priority=cached.get("priority", "unknown"),
             requester=TicketRequester.model_validate(cached.get("requester") or {}),
             description=raw.get("description_text") or raw.get("description"),
+            custom_fields=dict(custom_fields),
+            requested_items=requested_items,
             raw=raw,
         )

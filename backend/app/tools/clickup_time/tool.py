@@ -29,6 +29,7 @@ class ClickUpTimeTool(ToolInterface):
     description = "Preview and save ClickUp time entries and list available clients."
     parameters = [
         ToolParameter(name="operation", type="string", description="One of: get_clients, prepare, save"),
+        ToolParameter(name="list_id", type="string", description="ClickUp list ID (required for get_clients and save)", required=False, default=""),
         ToolParameter(name="task_name", type="string", description="Task name", required=False),
         ToolParameter(name="description", type="string", description="Work description", required=False),
         ToolParameter(name="start_datetime", type="string", description="Start datetime Europe/Madrid", required=False),
@@ -50,7 +51,8 @@ class ClickUpTimeTool(ToolInterface):
 
         try:
             if operation == "get_clients":
-                names = get_clickup_client_names()
+                list_id = self._require(kwargs, "list_id")
+                names = get_clickup_client_names(list_id)
                 return ToolResult.ok(data={"clients": names}, message=f"Found {len(names)} client(s)")
 
             if operation == "prepare":
@@ -59,9 +61,10 @@ class ClickUpTimeTool(ToolInterface):
                 return ToolResult.ok(data=preview, message="Time entry preview ready")
 
             if operation == "save":
+                list_id = self._require(kwargs, "list_id")
                 time_entry = self._build_time_entry_data(kwargs)
                 time_entry["approved"] = kwargs.get("approved", False)
-                message = save_time_entry(time_entry)
+                message = save_time_entry.invoke({"time_entry": time_entry, "list_id": list_id})
                 return ToolResult.ok(data={"message": message}, message=message)
 
             return ToolResult.error(message=f"Unknown operation '{operation}' for clickup_time tool")

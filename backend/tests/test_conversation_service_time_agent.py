@@ -1,17 +1,62 @@
+from datetime import date, time
+
 import pytest
 
 from app.agents.conversation.agent import ConversationAgent
 from app.agents.conversation.schemas import ConversationResponse
 from app.agents.time.agent import TimeAgent
-from app.agents.time.extractor import TimeAgentParameterExtractor
+from app.agents.time.schemas import TimeEntryParameters
 from app.assistant.context_builder import AssistantContextBuilder
 from app.assistant.conversation_service import AssistantConversationService
 from app.assistant.schemas.actions import AssistantAction, AssistantActionCreate
 from app.assistant.schemas.context import AssistantContext
 from app.assistant.schemas.recommendations import PrioritizedWorkPlan
 from app.schemas.clickup import WeekTimeResponse
+from app.schemas.settings import AppSettings
 from app.schemas.ticket import Ticket, TicketRequester
 from app.tools.base import ToolInterface, ToolRegistry, ToolResult
+
+TODAY = date(2026, 6, 29)
+
+
+class ScriptedNarrativeExtractor:
+    """Test double returning pre-scripted activities for known test messages.
+
+    Stands in for the LLM-based DailyNarrativeExtractor so conversation
+    service tests stay deterministic without calling an LLM.
+    """
+
+    async def extract(self, message: str, today: date) -> list[TimeEntryParameters]:
+        if "1001" in message:
+            return [
+                TimeEntryParameters(
+                    task_name="Revisión del ticket 1001",
+                    client_name="Acme",
+                    description="Revisión del ticket 1001",
+                    duration_minutes=120,
+                    start_date=TODAY,
+                    start_time=time(9, 0),
+                )
+            ]
+        if "cliente Acme" in message:
+            return [
+                TimeEntryParameters(
+                    task_name="Trabajo para Acme",
+                    client_name="Acme",
+                    description="Trabajo para Acme",
+                    duration_minutes=180,
+                    start_date=TODAY,
+                    start_time=None,
+                )
+            ]
+        return []
+
+
+class FakeSettingsService:
+    """Settings service stub returning a fixed personal ClickUp list id."""
+
+    async def get_settings(self) -> AppSettings:
+        return AppSettings(clickup_personal_list_id="list-1")
 
 
 class FakeConversationRepository:
@@ -259,10 +304,8 @@ def conversation_service() -> AssistantConversationService:
         Service ready for unit testing.
 
     Edge cases:
-        TimeAgent uses a fixed reference date to keep tests deterministic.
+        TimeAgent uses a scripted narrative extractor to keep tests deterministic.
     """
-    from datetime import date
-
     registry = ToolRegistry()
     registry.register(FakeFreshserviceTool({"tickets": []}))
     registry.register(FakeClickUpTool({"tasks": []}))
@@ -274,8 +317,9 @@ def conversation_service() -> AssistantConversationService:
         conversation_agent=FakeConversationAgent(),
         time_agent=TimeAgent(
             memory_facade=FakeMemoryFacade(),
+            narrative_extractor=ScriptedNarrativeExtractor(),
+            settings_service=FakeSettingsService(),
             clickup_time_tool=FakeClickUpTimeTool(),
-            extractor=TimeAgentParameterExtractor(today=date(2026, 6, 29)),
         ),
         tool_registry=registry,
     )
@@ -284,8 +328,6 @@ def conversation_service() -> AssistantConversationService:
 @pytest.fixture
 def failing_conversation_service() -> AssistantConversationService:
     """Build a conversation service whose LLM agent always fails."""
-    from datetime import date
-
     registry = ToolRegistry()
     registry.register(FakeFreshserviceTool({"tickets": []}))
     registry.register(FakeClickUpTool({"tasks": []}))
@@ -297,8 +339,9 @@ def failing_conversation_service() -> AssistantConversationService:
         conversation_agent=FailingConversationAgent(),
         time_agent=TimeAgent(
             memory_facade=FakeMemoryFacade(),
+            narrative_extractor=ScriptedNarrativeExtractor(),
+            settings_service=FakeSettingsService(),
             clickup_time_tool=FakeClickUpTimeTool(),
-            extractor=TimeAgentParameterExtractor(today=date(2026, 6, 29)),
         ),
         tool_registry=registry,
     )

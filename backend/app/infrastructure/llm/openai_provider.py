@@ -2,6 +2,7 @@
 
 import json
 import re
+from collections.abc import AsyncIterator
 from typing import Any
 
 from openai import AsyncOpenAI, OpenAIError
@@ -10,6 +11,51 @@ from pydantic import ValidationError
 from app.core.config import Settings
 from app.core.errors import ExternalServiceError
 from app.core.llm.provider import LLMProvider
+
+
+class _AnswerExtractor:
+    """Extract the value of the JSON 'answer' key from a streaming token sequence."""
+
+    _PATTERNS = ('"answer": "', '"answer":"', '"answer" : "', '"answer" :"')
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self._in_value = False
+        self._done = False
+        self._escape = False
+
+    def feed(self, chunk: str) -> str:
+        """Feed a chunk of raw JSON tokens; return extracted answer characters."""
+        out: list[str] = []
+        for ch in chunk:
+            if self._done:
+                break
+            if not self._in_value:
+                self._buf += ch
+                if len(self._buf) > 40:
+                    self._buf = self._buf[-20:]
+                if any(self._buf.endswith(p) for p in self._PATTERNS):
+                    self._in_value = True
+            else:
+                if self._escape:
+                    self._escape = False
+                    if ch == "n":
+                        out.append("\n")
+                    elif ch == "t":
+                        out.append("\t")
+                    elif ch == "r":
+                        out.append("\r")
+                    elif ch in ('"', "\\", "/"):
+                        out.append(ch)
+                    else:
+                        out.append(ch)
+                elif ch == "\\":
+                    self._escape = True
+                elif ch == '"':
+                    self._done = True
+                else:
+                    out.append(ch)
+        return "".join(out)
 
 
 class OpenAILLMProvider(LLMProvider):
@@ -86,6 +132,52 @@ class OpenAILLMProvider(LLMProvider):
             return data
         except (OpenAIError, json.JSONDecodeError, ValidationError) as error:
             raise ExternalServiceError(f"OpenAI structured completion failed: {error}") from error
+
+    async def stream_structured_answer(
+        self,
+        prompt: str,
+        context: dict[str, Any] | None = None,
+        schema: type[Any] | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream the 'answer' field token by token, then yield the full parsed response."""
+        if self._client is None:
+            mock = self._mock_structured_response(prompt, context, schema)
+            answer = mock.get("answer", "") if isinstance(mock, dict) else ""
+            if answer:
+                yield {"type": "token", "text": answer}
+            yield {"type": "done", "data": mock}
+            return
+
+        messages = self._build_messages(prompt, context)
+        extractor = _AnswerExtractor()
+        full_content = ""
+
+        try:
+            stream = await self._client.chat.completions.create(
+                model=self._model,
+                response_format={"type": "json_object"},
+                messages=messages,
+                stream=True,
+            )
+            async for chunk in stream:
+                delta = chunk.choices[0].delta.content or ""
+                if not delta:
+                    continue
+                full_content += delta
+                tokens = extractor.feed(delta)
+                if tokens:
+                    yield {"type": "token", "text": tokens}
+        except OpenAIError as error:
+            yield {"type": "error", "message": f"OpenAI streaming failed: {error}"}
+            return
+
+        try:
+            data = self._extract_json(full_content)
+            if schema is not None:
+                data = schema.model_validate(data).model_dump()
+            yield {"type": "done", "data": data}
+        except (json.JSONDecodeError, ValidationError) as error:
+            yield {"type": "error", "message": f"Response parsing failed: {error}"}
 
     def _extract_json(self, content: str) -> dict[str, Any]:
         """Extract JSON object from potentially malformed content.

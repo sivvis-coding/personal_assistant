@@ -35,6 +35,7 @@ router = APIRouter(prefix="/tickets", tags=["tickets"], dependencies=[Depends(re
 async def list_tickets(
     scope: Literal["mine", "all"] = Query(default="mine"),
     include_closed: bool = Query(default=False),
+    force_refresh: bool = Query(default=False),
     ticket_service: TicketService = Depends(get_ticket_service),
 ) -> TicketListResponse:
     """List tickets from Fresh or mock source and cache them.
@@ -50,7 +51,7 @@ async def list_tickets(
     Edge cases:
         Missing Fresh credentials return mock tickets.
     """
-    return await ticket_service.list_tickets(scope, include_closed=include_closed)
+    return await ticket_service.list_tickets(scope, include_closed=include_closed, force_refresh=force_refresh)
 
 
 @router.get("/debug/freshservice")

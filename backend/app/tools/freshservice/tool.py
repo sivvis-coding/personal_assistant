@@ -7,6 +7,7 @@ from app.services.ticket_service import TicketService
 from app.tools.base import ToolInterface, ToolParameter, ToolResult
 from app.tools.freshservice.adapter import FreshserviceAdapter
 from app.tools.freshservice.schemas import (
+    GetConversationsInput,
     GetTicketInput,
     ListTicketsInput,
     ReplyTicketInput,
@@ -29,7 +30,7 @@ class FreshserviceTool(ToolInterface):
     name = "freshservice"
     description = "Read and update Freshservice tickets."
     parameters = [
-        ToolParameter(name="operation", type="string", description="One of: list, get, update, reply, search"),
+        ToolParameter(name="operation", type="string", description="One of: list, get, conversations, update, reply, search"),
         ToolParameter(name="ticket_id", type="string", description="Freshservice ticket identifier", required=False),
         ToolParameter(name="body", type="string", description="Reply body or note content", required=False),
         ToolParameter(name="changes", type="object", description="Fields to update", required=False),
@@ -63,6 +64,12 @@ class FreshserviceTool(ToolInterface):
                 ticket_id = self._require(kwargs, "ticket_id")
                 result = await self._adapter.get_ticket(GetTicketInput(ticket_id=ticket_id))
                 return ToolResult.ok(data=result, message=f"Retrieved ticket {result.ticket.id} from {result.source}")
+
+            if operation == "conversations":
+                ticket_id = self._require(kwargs, "ticket_id")
+                data = await self._adapter.get_conversations(GetConversationsInput(ticket_id=ticket_id))
+                count = len(data.get("conversations", []))
+                return ToolResult.ok(data=data, message=f"Retrieved {count} conversation entries for ticket {ticket_id}")
 
             if operation == "update":
                 ticket_id = self._require(kwargs, "ticket_id")

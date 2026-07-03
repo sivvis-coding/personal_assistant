@@ -1,11 +1,14 @@
 """Tests for the migrated time agent."""
 
+from datetime import date, time
+
 import pytest
 
 from app.agents.base import AgentContext
 from app.agents.time.agent import TimeAgent
-from app.agents.time.extractor import TimeAgentParameterExtractor
+from app.agents.time.schemas import TimeEntryParameters
 from app.domain.assistant.events import TimeTrackingRequested
+from app.schemas.settings import AppSettings
 from app.tools.base import ToolInterface, ToolResult
 
 
@@ -53,6 +56,26 @@ class FakeClickUpTimeTool(ToolInterface):
         return ToolResult.error(message="Unknown")
 
 
+class FakeNarrativeExtractor:
+    """Deterministic stand-in for DailyNarrativeExtractor in tests."""
+
+    def __init__(self, activities: list[TimeEntryParameters]) -> None:
+        self._activities = activities
+
+    async def extract(self, message: str, today: date) -> list[TimeEntryParameters]:
+        return self._activities
+
+
+class FakeSettingsService:
+    """Settings service stub returning a fixed personal ClickUp list id."""
+
+    def __init__(self, list_id: str = "list-1") -> None:
+        self._list_id = list_id
+
+    async def get_settings(self) -> AppSettings:
+        return AppSettings(clickup_personal_list_id=self._list_id)
+
+
 def test_is_time_tracking_request_detects_keywords():
     """The agent recognizes time-tracking intent from keywords."""
     assert TimeAgent.is_time_tracking_request("imputa 2h hoy")
@@ -61,45 +84,79 @@ def test_is_time_tracking_request_detects_keywords():
 
 @pytest.mark.asyncio
 async def test_process_extracts_complete_request():
-    """The agent extracts parameters and builds a success result."""
-    from datetime import date
-
-    extractor = TimeAgentParameterExtractor(today=date(2024, 6, 15))
+    """The agent resolves an extracted activity and builds a success result."""
+    activity = TimeEntryParameters(
+        task_name="Revisión de tickets",
+        client_name="",
+        description="Revisión de tickets",
+        duration_minutes=180,
+        start_date=date(2024, 6, 15),
+        start_time=time(9, 0),
+    )
     agent = TimeAgent(
         memory_facade=FakeMemoryFacade(),
+        narrative_extractor=FakeNarrativeExtractor([activity]),
+        settings_service=FakeSettingsService(),
         clickup_time_tool=FakeClickUpTimeTool(),
-        extractor=extractor,
     )
 
     result = await agent.process("imputa 3h hoy a las 9h por revisión de tickets")
 
     assert result.success is True
-    assert result.preview["duration_minutes"] == 180
-    assert result.action_payload["task_name"] != ""
+    resolved = result.activities[0]
+    assert resolved.preview["duration_minutes"] == 180
+    assert resolved.action_payload["task_name"] != ""
 
 
 @pytest.mark.asyncio
 async def test_process_asks_for_missing_fields():
-    """Incomplete requests trigger a clarification response."""
-    agent = TimeAgent(memory_facade=FakeMemoryFacade(), clickup_time_tool=FakeClickUpTimeTool())
+    """Incomplete activities are reported without guessing missing data."""
+    agent = TimeAgent(
+        memory_facade=FakeMemoryFacade(),
+        narrative_extractor=FakeNarrativeExtractor([TimeEntryParameters()]),
+        settings_service=FakeSettingsService(),
+        clickup_time_tool=FakeClickUpTimeTool(),
+    )
 
     result = await agent.process("imputa tiempo")
 
     assert result.success is False
-    assert result.needs_clarification is True
-    assert "Falta" in result.answer
+    assert result.activities[0].needs_clarification is False
+    assert "necesito más datos" in result.activities[0].answer
+
+
+@pytest.mark.asyncio
+async def test_process_returns_no_activities_when_narrative_has_no_work():
+    """A narrative with no identifiable work yields no activities."""
+    agent = TimeAgent(
+        memory_facade=FakeMemoryFacade(),
+        narrative_extractor=FakeNarrativeExtractor([]),
+        settings_service=FakeSettingsService(),
+        clickup_time_tool=FakeClickUpTimeTool(),
+    )
+
+    result = await agent.process("hola, ¿qué tal?")
+
+    assert result.success is False
+    assert result.activities == []
 
 
 @pytest.mark.asyncio
 async def test_handle_emits_time_tracking_prepared_event():
     """The event handler emits TimeTrackingPrepared."""
-    from datetime import date
-
-    extractor = TimeAgentParameterExtractor(today=date(2024, 6, 15))
+    activity = TimeEntryParameters(
+        task_name="Revisión",
+        client_name="",
+        description="Revisión",
+        duration_minutes=180,
+        start_date=date(2024, 6, 15),
+        start_time=time(9, 0),
+    )
     agent = TimeAgent(
         memory_facade=FakeMemoryFacade(),
+        narrative_extractor=FakeNarrativeExtractor([activity]),
+        settings_service=FakeSettingsService(),
         clickup_time_tool=FakeClickUpTimeTool(),
-        extractor=extractor,
     )
     context = AgentContext(tools=[FakeClickUpTimeTool()])
 

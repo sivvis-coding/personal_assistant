@@ -204,6 +204,15 @@ class ConversationRepository(BaseRepository):
             })
         return conversations
 
+    async def delete_conversation(self, conversation_id: str) -> bool:
+        """Delete a conversation document permanently.
+
+        Returns:
+            True when deleted, False when not found.
+        """
+        result = await self.collection.delete_one({"_id": self._object_id(conversation_id)})
+        return result.deleted_count > 0
+
     async def get_conversation(self, conversation_id: str) -> dict[str, Any] | None:
         """Return a single conversation with all messages.
 

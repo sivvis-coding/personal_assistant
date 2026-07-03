@@ -8,7 +8,6 @@ from app.agents.freshservice.agent import FreshserviceAgent
 from app.agents.notification.agent import NotificationAgent
 from app.agents.planner.agent import PlannerAgent
 from app.agents.prioritization.agent import PrioritizationAgent
-from app.agents.time.agent import TimeAgent
 from app.agents.triage.agent import TicketTriageAgent
 from app.core.config import Settings
 from app.core.constants import DEFAULT_USER_ID
@@ -127,12 +126,6 @@ class Container(containers.DeclarativeContainer):
         PrioritizationAgent,
         memory_facade=memory_facade,
     )
-    time_agent = providers.Singleton(
-        TimeAgent,
-        memory_facade=memory_facade,
-        clickup_time_tool=providers.Singleton(ClickUpTimeTool),
-    )
-
     freshservice_adapter = providers.Singleton(
         FreshserviceAdapter,
         ticket_service=ticket_service,

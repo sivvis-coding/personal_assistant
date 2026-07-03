@@ -24,6 +24,21 @@ export interface TicketRequester {
   email?: string | null;
 }
 
+export interface RequestedItem {
+  id?: number | null;
+  item_id?: number | null;
+  service_item_id?: number | null;
+  service_item_name?: string | null;
+  name?: string | null;
+  quantity?: number | null;
+  cost_per_item?: number | null;
+  cost_per_request?: number | null;
+  fulfillment_status?: string | null;
+  stage?: number | null;
+  remarks?: string | null;
+  custom_fields?: Record<string, unknown> | null;
+}
+
 export interface Ticket {
   id: string;
   subject: string;
@@ -31,6 +46,8 @@ export interface Ticket {
   priority: TicketPriority;
   requester: TicketRequester;
   description?: string | null;
+  custom_fields?: Record<string, unknown> | null;
+  requested_items?: RequestedItem[] | null;
   url?: string | null;
   clickup_url?: string | null;
   raw: Record<string, unknown>;

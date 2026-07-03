@@ -1,5 +1,7 @@
 """Conversation agent for general assistant chat."""
 
+import asyncio
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
@@ -134,45 +136,83 @@ class ConversationAgent:
         Edge cases:
             Unknown tools return an error result instead of raising.
         """
-        results: list[dict[str, Any]] = []
         tool_map = {tool.name: tool for tool in tools}
 
-        for call in tool_calls:
+        async def _run_one(call: ToolCall) -> dict[str, Any]:
             tool = tool_map.get(call.tool)
             if tool is None:
-                results.append(
-                    {
-                        "tool": call.tool,
-                        "error": f"Tool '{call.tool}' is not available",
-                    }
-                )
-                continue
-
+                return {"tool": call.tool, "error": f"Tool '{call.tool}' is not available"}
             try:
-                result: ToolResult = await tool.execute(
-                    operation=call.operation,
-                    **call.parameters,
-                )
-                results.append(
-                    {
-                        "tool": call.tool,
-                        "operation": call.operation,
-                        "success": result.success,
-                        "data": result.data,
-                        "message": result.message,
-                    }
-                )
+                result: ToolResult = await tool.execute(operation=call.operation, **call.parameters)
+                return {
+                    "tool": call.tool,
+                    "operation": call.operation,
+                    "success": result.success,
+                    "data": result.data,
+                    "message": result.message,
+                }
             except Exception as exc:  # noqa: BLE001
-                results.append(
-                    {
-                        "tool": call.tool,
-                        "operation": call.operation,
-                        "success": False,
-                        "error": str(exc),
-                    }
-                )
+                return {"tool": call.tool, "operation": call.operation, "success": False, "error": str(exc)}
 
-        return results
+        return list(await asyncio.gather(*(_run_one(call) for call in tool_calls)))
+
+    async def respond_stream(
+        self,
+        message: str,
+        context: AssistantContext,
+        tools: list[ToolInterface],
+        message_history: list[dict[str, Any]] | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Like respond(), but streams the final answer as SSE token events.
+
+        Runs tool-call iterations non-streaming until the model produces a response
+        with no tool_calls, then streams that final answer for real-time UX.
+
+        Yields dicts:
+            {"type": "token", "text": str} — incremental answer text
+            {"type": "done", "data": dict} — full ConversationResponse dump
+            {"type": "error", "message": str} — on failure
+        """
+        prompt = _load_prompt("conversation_v1.txt")
+        base_context = {
+            "message_history": message_history or [],
+            "current_message": message,
+            "context": {
+                "tickets": [ticket.model_dump() for ticket in context.tickets],
+                "ticket_source": context.ticket_source,
+                "week_time": context.week_time.model_dump(),
+                "existing_backlog_ticket_ids": context.existing_backlog_ticket_ids,
+                "clickup_lists": [lst.model_dump() for lst in context.clickup_lists],
+                "user_preferences": context.user_preferences,
+            },
+            "available_tools": _tool_descriptions(tools),
+            "agent_instructions": context.agent_system_prompt,
+        }
+
+        tool_results: list[dict[str, Any]] = []
+        final_context: dict[str, Any] = base_context
+
+        for _ in range(self._max_tool_iterations):
+            llm_context = {**base_context, "tool_results": tool_results}
+            final_context = llm_context
+            response_data = await self._llm_provider.complete_structured(
+                prompt=prompt,
+                context=llm_context,
+                schema=ConversationResponse,
+            )
+            response = ConversationResponse.model_validate(response_data)
+            if not response.tool_calls:
+                # Got final response — stream it now
+                break
+            tool_results = await self._execute_tool_calls(response.tool_calls, tools)
+
+        # Stream the final answer (uses the same accumulated context + tool_results)
+        async for event in self._llm_provider.stream_structured_answer(
+            prompt=prompt,
+            context=final_context,
+            schema=ConversationResponse,
+        ):
+            yield event
 
     @staticmethod
     def is_time_tracking_request(message: str) -> bool:

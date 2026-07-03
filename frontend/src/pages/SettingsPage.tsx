@@ -44,6 +44,8 @@ const defaultSettings: AppSettings = {
   clickup_api_key: '',
   clickup_team_id: '',
   clickup_lists: [],
+  clickup_personal_list_id: '',
+  clickup_personal_list_name: '',
   agent_system_prompt: '',
   openai_api_key: '',
   openai_model: 'gpt-5.4',
@@ -668,6 +670,47 @@ export function SettingsPage() {
                     );
                   })}
                 </Box>
+              )}
+            </Box>
+
+            <Divider />
+
+            {/* Personal list: single dedicated list for daily hour imputation, separate from the ticket-routing table above */}
+            <Box>
+              <Typography variant="subtitle2" gutterBottom>
+                Lista personal (imputación de horas)
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                Lista de ClickUp donde el asistente crea tareas y registra horas cuando narras tu día. Es una única lista, distinta de las listas de tickets de arriba.
+              </Typography>
+              {clickupDiscovery.options.length > 0 ? (
+                <Autocomplete
+                  options={clickupDiscovery.options}
+                  getOptionLabel={(option) => option.name}
+                  value={
+                    clickupDiscovery.options.find((list) => list.id === settings.clickup_personal_list_id) ||
+                    (settings.clickup_personal_list_id
+                      ? { id: settings.clickup_personal_list_id, name: settings.clickup_personal_list_name }
+                      : null)
+                  }
+                  onChange={(_, newValue) => {
+                    updateField('clickup_personal_list_id', newValue?.id ?? '');
+                    updateField('clickup_personal_list_name', newValue?.name ?? '');
+                  }}
+                  renderInput={(params) => (
+                    <TextField {...params} label="Lista personal" placeholder="Buscar lista…" size="small" />
+                  )}
+                  sx={{ mb: 1 }}
+                />
+              ) : (
+                <TextField
+                  label="Lista personal seleccionada"
+                  value={settings.clickup_personal_list_name || settings.clickup_personal_list_id}
+                  disabled
+                  fullWidth
+                  size="small"
+                  helperText='Descubre workspaces y carga listas arriba ("Cargar listas") para poder seleccionar una.'
+                />
               )}
             </Box>
           </Box>

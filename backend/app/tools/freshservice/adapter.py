@@ -7,6 +7,7 @@ capabilities through the ToolInterface contract.
 from app.integrations.fresh import FreshClient
 from app.services.ticket_service import TicketService
 from app.tools.freshservice.schemas import (
+    GetConversationsInput,
     GetTicketInput,
     ListTicketsInput,
     ReplyTicketInput,
@@ -93,6 +94,27 @@ class FreshserviceAdapter:
         May only be called after a ClickUp task has been successfully created.
         """
         return await self._client.set_clickup_url(ticket_id, clickup_url)
+
+    async def get_conversations(self, input_data: GetConversationsInput) -> dict[str, object]:
+        """Return the conversation thread for a ticket (public replies and notes)."""
+        response = await self._ticket_service.get_conversations(input_data.ticket_id)
+        return {
+            "ticket_id": input_data.ticket_id,
+            "source": response.source,
+            "error": response.error,
+            "conversations": [
+                {
+                    "id": c.id,
+                    "kind": c.kind,
+                    "body_text": c.body_text,
+                    "from_email": c.from_email,
+                    "incoming": c.incoming,
+                    "private": c.private,
+                    "created_at": c.created_at.isoformat() if c.created_at else None,
+                }
+                for c in response.items
+            ],
+        }
 
     async def search_tickets(self, input_data: SearchTicketsInput) -> TicketListResult:
         """Search tickets by keyword.

@@ -43,6 +43,8 @@ class AppSettings(BaseModel):
         clickup_api_key: ClickUp API key.
         clickup_team_id: ClickUp team ID.
         clickup_lists: Configured ClickUp lists with routing descriptions and field docs.
+        clickup_personal_list_id: Dedicated ClickUp list ID used for daily hour imputation tasks.
+        clickup_personal_list_name: Display name for the personal list, shown in the UI.
         agent_system_prompt: Custom behavioral instructions appended to the base agent prompt.
         openai_api_key: OpenAI API key.
         openai_model: OpenAI model name.
@@ -53,6 +55,8 @@ class AppSettings(BaseModel):
     Edge cases:
         Empty strings are valid and mean "not configured".
         clickup_lists replaces the legacy clickup_list_id field.
+        clickup_personal_list_id is a single dedicated list, distinct from the clickup_lists
+        routing table used for ticket-derived tasks.
     """
 
     fresh_base_url: str = ""
@@ -63,6 +67,8 @@ class AppSettings(BaseModel):
     clickup_api_key: str = ""
     clickup_team_id: str = ""
     clickup_lists: list[ClickUpListConfig] = []
+    clickup_personal_list_id: str = ""
+    clickup_personal_list_name: str = ""
     agent_system_prompt: str = ""
     openai_api_key: str = ""
     openai_model: str = "gpt-5.4"

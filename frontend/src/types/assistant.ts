@@ -1,5 +1,5 @@
 export type TicketRecommendationCategory = 'action_now' | 'backlog_candidate' | 'needs_more_info' | 'ignore_or_monitor' | 'already_in_backlog';
-export type AssistantActionType = 'prepare_clickup_task' | 'approve_clickup_task' | 'save_time_entry' | 'reply_freshservice_ticket' | 'resolve_freshservice_ticket' | 'request_info_freshservice_ticket' | 'send_ticket_to_backlog';
+export type AssistantActionType = 'prepare_clickup_task' | 'approve_clickup_task' | 'save_time_entry' | 'reply_freshservice_ticket' | 'resolve_freshservice_ticket' | 'request_info_freshservice_ticket' | 'send_ticket_to_backlog' | 'link_existing_clickup_task';
 export type AssistantActionStatus = 'proposed' | 'approved' | 'rejected' | 'completed' | 'failed';
 
 export interface TicketRecommendation {
@@ -44,6 +44,7 @@ export interface AssistantMessageResponse {
   proposed_actions: AssistantAction[];
   needs_clarification: boolean;
   clarification_question: string;
+  next_suggestions: string[];
 }
 
 export interface TimeEntryPreview {

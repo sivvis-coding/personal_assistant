@@ -1,7 +1,9 @@
+import json
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
 from app.api.deps import (
     get_assistant_action_executor,
@@ -13,7 +15,7 @@ from app.api.deps import (
 )
 from app.assistant.action_executor import AssistantActionExecutor
 from app.agents.time.agent import TimeAgent
-from app.assistant.schemas.actions import AssistantAction
+from app.assistant.schemas.actions import AssistantAction, AssistantActionCreate
 from app.assistant.schemas.conversation import (
     AssistantConversationCreateResponse,
     AssistantMessageRequest,
@@ -111,6 +113,46 @@ async def send_message(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
 
 
+@router.delete("/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_conversation(
+    conversation_id: str,
+    service: AssistantConversationService = Depends(get_assistant_conversation_service),
+) -> None:
+    """Permanently delete a conversation and all its messages."""
+    deleted = await service.delete_conversation(conversation_id)
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+
+
+@router.post("/conversations/{conversation_id}/messages/stream")
+async def stream_message(
+    conversation_id: str,
+    request: AssistantMessageRequest,
+    service: AssistantConversationService = Depends(get_assistant_conversation_service),
+) -> StreamingResponse:
+    """Stream assistant response tokens via Server-Sent Events.
+
+    Yields 'token' events as text is generated, then a 'done' event with the
+    full structured response (proposed_actions, next_suggestions, etc.).
+    """
+    async def generate():
+        try:
+            async for event in service.handle_message_stream(conversation_id, request.message):
+                yield f"data: {json.dumps(event, default=str)}\n\n"
+        except Exception as exc:  # noqa: BLE001
+            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 class AssistantActionPayloadUpdateRequest(BaseModel):
     """Payload update request for an assistant action before approval.
 
@@ -125,6 +167,32 @@ class AssistantActionPayloadUpdateRequest(BaseModel):
     """
 
     payload: dict[str, Any]
+
+
+class DirectActionCreateRequest(BaseModel):
+    """Direct action creation request (bypasses the conversation agent)."""
+
+    action_type: str
+    title: str
+    description: str
+    ticket_id: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+@router.post("/actions", response_model=AssistantAction, status_code=status.HTTP_201_CREATED)
+async def create_action(
+    request: DirectActionCreateRequest,
+    repository: AssistantActionRepository = Depends(get_assistant_action_repository),
+) -> AssistantAction:
+    """Create a pending action directly without going through the conversation agent."""
+    action = AssistantActionCreate(
+        action_type=request.action_type,
+        title=request.title,
+        description=request.description,
+        ticket_id=request.ticket_id,
+        payload=request.payload,
+    )
+    return await repository.create_action(action)
 
 
 @router.get("/actions/pending", response_model=list[AssistantAction])
@@ -227,28 +295,28 @@ async def process_time_tracking_request(
         assistant_action_tool: Tool for creating pending assistant actions.
 
     Returns:
-        Processing result with optional preview and pending action.
+        Processing result with optional preview and pending action for the first
+        resolved activity. A narrative describing several activities creates a
+        pending action for each one, but only the first is returned here —
+        use the chat endpoint (`/assistant/conversations/{id}/messages`) to see
+        and approve all of them.
 
     Edge cases:
-        Incomplete requests return success=False and no pending action.
+        Incomplete requests, or requests with no fully resolved activity, return success=False.
     """
     result = await agent.process(request.message)
 
-    if not result.success:
+    resolved = [a for a in result.activities if a.success and not a.needs_clarification]
+    if not resolved:
         return TimeTrackingProcessResponse(success=False, answer=result.answer)
 
-    if result.preview is None or "duration_minutes" not in result.preview:
-        return TimeTrackingProcessResponse(
-            success=False,
-            answer="No se pudo generar la vista previa del registro de tiempo.",
-        )
-
+    first = resolved[0]
     tool_result: ToolResult = await assistant_action_tool.execute(
         operation="create",
         action_type="save_time_entry",
-        title=f"Imputar {result.preview['duration_minutes']} min en ClickUp",
-        description=result.answer,
-        payload=result.action_payload,
+        title=f"Imputar {first.preview['duration_minutes']} min en ClickUp",
+        description=first.answer,
+        payload=first.action_payload,
     )
 
     if not tool_result.success or tool_result.data is None:
@@ -259,6 +327,6 @@ async def process_time_tracking_request(
     return TimeTrackingProcessResponse(
         success=True,
         answer=result.answer,
-        preview=result.preview,
+        preview=first.preview,
         proposed_action=action,
     )

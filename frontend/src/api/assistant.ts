@@ -8,6 +8,73 @@ import type {
   TimeTrackingProcessResponse,
 } from '../types/assistant';
 
+export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
+
+export interface StreamCallbacks {
+  onToken: (text: string) => void;
+  onDone: (response: AssistantMessageResponse) => void;
+  onError: (message: string) => void;
+}
+
+/**
+ * Stream an assistant message response via SSE.
+ *
+ * Calls onToken for each incremental text chunk, onDone when the full structured
+ * response arrives, and onError on failure.
+ */
+export async function streamAssistantMessage(
+  conversationId: string,
+  message: string,
+  callbacks: StreamCallbacks,
+): Promise<void> {
+  const localKey = window.localStorage.getItem('LOCAL_APP_API_KEY') ?? '';
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (localKey) headers['X-Local-App-Key'] = localKey;
+
+  const response = await fetch(
+    `${API_BASE_URL}/assistant/conversations/${conversationId}/messages/stream`,
+    { method: 'POST', headers, body: JSON.stringify({ message }) },
+  );
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({ detail: response.statusText }));
+    callbacks.onError(String(payload.detail ?? response.statusText));
+    return;
+  }
+
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+
+    // SSE events are separated by \n\n
+    const parts = buffer.split('\n\n');
+    buffer = parts.pop() ?? '';
+
+    for (const part of parts) {
+      const line = part.trim();
+      if (!line.startsWith('data: ')) continue;
+      try {
+        const event = JSON.parse(line.slice(6)) as { type: string; text?: string; data?: AssistantMessageResponse; message?: string };
+        if (event.type === 'token' && event.text) {
+          callbacks.onToken(event.text);
+        } else if (event.type === 'done' && event.data) {
+          callbacks.onDone(event.data);
+        } else if (event.type === 'error') {
+          callbacks.onError(event.message ?? 'Error desconocido');
+        }
+      } catch {
+        // Ignore malformed events
+      }
+    }
+  }
+}
+
 /**
  * Create an assistant conversation.
  *
@@ -142,6 +209,25 @@ export function approveAssistantAction(actionId: string): Promise<AssistantActio
  */
 export function rejectAssistantAction(actionId: string): Promise<AssistantAction> {
   return apiRequest<AssistantAction>(`/assistant/actions/${actionId}/reject`, { method: 'POST' });
+}
+
+export function deleteAssistantConversation(conversationId: string): Promise<void> {
+  return apiRequest<void>(`/assistant/conversations/${conversationId}`, { method: 'DELETE' });
+}
+
+export interface CreateActionRequest {
+  action_type: string;
+  title: string;
+  description: string;
+  ticket_id?: string;
+  payload: Record<string, unknown>;
+}
+
+export function createAssistantAction(request: CreateActionRequest): Promise<AssistantAction> {
+  return apiRequest<AssistantAction>('/assistant/actions', {
+    method: 'POST',
+    body: JSON.stringify(request),
+  });
 }
 
 /**

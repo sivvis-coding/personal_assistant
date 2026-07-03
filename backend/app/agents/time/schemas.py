@@ -112,25 +112,69 @@ class TimeEntryParameters(BaseModel):
         return self.build_start_datetime() + timedelta(minutes=self.duration_minutes)
 
 
-class TimeAgentResult(BaseModel):
-    """Represent the output of the Time Agent for a single user request.
+class ExtractedActivity(BaseModel):
+    """Represent one activity extracted by the LLM from a free-text daily narrative.
 
     Parameters:
-        success: Whether the agent understood the request and produced a preview.
-        answer: Human-readable response text for the user.
-        parameters: Extracted time entry parameters.
-        preview: Optional safe preview returned by the ClickUp time tracking tool.
-        action_payload: Optional payload to store as an assistant action.
-        needs_clarification: Whether the agent needs more user input before creating an action.
-        proposed_client: Client name suggested for clarification.
-        candidate_clients: Available client names to choose from.
+        task_name: Short ClickUp task name for this activity.
+        client_name: Client mentioned for this activity, if any.
+        description: Human-readable description of the work performed.
+        duration_minutes: Duration in whole minutes, 0 when not mentioned.
+        start_date: Local date for the activity, None when not mentioned.
+        start_time: Local start time for the activity, None when not mentioned.
 
     Returns:
-        Structured time agent result.
+        One structured activity candidate.
 
     Edge cases:
-        When success is False, preview and action_payload are empty and answer explains what is missing.
-        When needs_clarification is True, the user must confirm or correct the proposed client.
+        Fields are left empty/zero/None rather than guessed when the narrative
+        does not mention them, so the agent can ask for clarification instead
+        of inventing data.
+    """
+
+    task_name: str = ""
+    client_name: str = ""
+    description: str = ""
+    duration_minutes: int = 0
+    start_date: date | None = None
+    start_time: time | None = None
+
+
+class DailyNarrativeExtraction(BaseModel):
+    """Represent the LLM output for a free-text daily narrative.
+
+    Parameters:
+        activities: Activities segmented from the narrative, in the order mentioned.
+
+    Returns:
+        Structured extraction ready for per-activity resolution.
+
+    Edge cases:
+        A narrative describing a single activity still yields a one-item list.
+    """
+
+    activities: list[ExtractedActivity] = Field(default_factory=list)
+
+
+class ActivityResolution(BaseModel):
+    """Represent the resolved (or pending) state of a single daily activity.
+
+    Parameters:
+        success: Whether this activity is ready to be proposed as an action.
+        answer: Human-readable note about this activity (missing fields, client ambiguity, or confirmation text).
+        parameters: The time entry parameters for this activity.
+        preview: Optional safe preview returned by the ClickUp time tracking tool.
+        action_payload: Optional payload to store as a save_time_entry assistant action.
+        needs_clarification: Whether the user must confirm or correct the client before this activity can proceed.
+        candidate_clients: Candidate client names to disambiguate, when needs_clarification is True.
+
+    Returns:
+        Structured per-activity resolution.
+
+    Edge cases:
+        success is False and needs_clarification is False when required fields
+        (task, description, duration, date/time) are missing — the user must
+        resend a more complete narrative rather than being asked one field at a time.
     """
 
     success: bool
@@ -139,8 +183,35 @@ class TimeAgentResult(BaseModel):
     preview: TimeEntryPreview | None = None
     action_payload: dict[str, Any] = Field(default_factory=dict)
     needs_clarification: bool = False
-    proposed_client: str = ""
     candidate_clients: list[str] = Field(default_factory=list)
+
+
+class TimeAgentResult(BaseModel):
+    """Represent the output of the Time Agent for a daily narrative request.
+
+    A single message may describe several activities (different clients/tasks),
+    so the result carries one ActivityResolution per detected activity instead
+    of a single flat outcome.
+
+    Parameters:
+        success: Whether at least one activity was resolved and is ready for approval.
+        answer: Human-readable summary for the user (resolved activities + next pending question, if any).
+        activities: Per-activity resolutions, in the order extracted from the message.
+        list_id: Personal ClickUp list ID used to resolve these activities, so callers
+            can reuse it when continuing a pending client confirmation.
+
+    Returns:
+        Structured time agent result.
+
+    Edge cases:
+        A single-activity message still produces a one-item activities list.
+        list_id is empty when the request failed before a list could be resolved.
+    """
+
+    success: bool
+    answer: str
+    activities: list[ActivityResolution] = Field(default_factory=list)
+    list_id: str = ""
 
 
 class TimeEntryActionPayload(BaseModel):
