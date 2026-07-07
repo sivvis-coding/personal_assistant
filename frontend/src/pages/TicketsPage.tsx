@@ -113,10 +113,10 @@ const ACTION_META: Record<QuickActionType, { label: string; icon: React.ReactNod
   task: {
     label: 'Crear tarea ClickUp',
     icon: <TaskIcon fontSize="small" />,
-    actionType: 'prepare_clickup_task',
+    actionType: 'send_ticket_to_backlog',
     hasBody: true,
-    bodyLabel: 'Descripción de la tarea',
-    bodyPlaceholder: 'Describe el trabajo a realizar en ClickUp...',
+    bodyLabel: 'Respuesta al cliente (opcional)',
+    bodyPlaceholder: 'Mensaje al cliente. El enlace a ClickUp se añadirá al final...',
   },
   resolve: {
     label: 'Marcar como resuelto',
@@ -163,7 +163,7 @@ function QuickActionDialog({ state, onClose, onSuccess }: QuickActionDialogProps
     try {
       let payload: Record<string, unknown> = {};
       if (actionType === 'reply') payload = { body };
-      else if (actionType === 'task') payload = { description: body, ticket_id: ticket.id };
+      else if (actionType === 'task') payload = body.trim() ? { body } : {};
       else if (actionType === 'resolve') payload = { status: resolveStatus };
       else if (actionType === 'request_info') payload = { body };
 

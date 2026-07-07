@@ -1,15 +1,15 @@
 """Conversation agent for general assistant chat."""
 
-import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
-from app.agents.conversation.schemas import ConversationResponse, ToolCall
+from app.agents.conversation.schemas import ConversationResponse
+from app.agents.conversation.tool_schemas import build_tool_schemas
 from app.agents.time.agent import TimeAgent
-from app.core.llm.provider import LLMProvider
+from app.core.llm.provider import LLMProvider, ToolExecutor
 from app.assistant.schemas.context import AssistantContext
-from app.tools.base import ToolInterface, ToolResult
+from app.tools.base import ToolInterface
 
 
 def _load_prompt(prompt_file: str) -> str:
@@ -27,19 +27,11 @@ def _load_prompt(prompt_file: str) -> str:
     return (Path(__file__).resolve().parent / "prompts" / prompt_file).read_text(encoding="utf-8")
 
 
-def _tool_descriptions(tools: list[ToolInterface]) -> list[dict[str, Any]]:
-    """Return a JSON-serializable description of available tools."""
-    return [
-        {
-            "name": tool.name,
-            "description": tool.description,
-            "parameters": [
-                {"name": param.name, "type": param.type, "description": param.description, "required": param.required}
-                for param in tool.parameters
-            ],
-        }
-        for tool in tools
-    ]
+def _jsonable(value: Any) -> Any:
+    """Make a tool result payload JSON-serializable for the model."""
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    return value
 
 
 class ConversationAgent:
@@ -83,8 +75,24 @@ class ConversationAgent:
             Unknown tools requested by the LLM are skipped and reported.
             LLM failures are surfaced as-is so the service can decide how to handle them.
         """
-        prompt = _load_prompt("conversation_v1.txt")
-        base_context = {
+        response_data = await self._llm_provider.run_tool_loop(
+            prompt=_load_prompt("conversation_v1.txt"),
+            context=self._build_context(message, context, message_history),
+            schema=ConversationResponse,
+            tool_schemas=build_tool_schemas(tools),
+            execute_tool=self._make_executor(tools),
+            max_iterations=self._max_tool_iterations,
+        )
+        return ConversationResponse.model_validate(response_data)
+
+    def _build_context(
+        self,
+        message: str,
+        context: AssistantContext,
+        message_history: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        """Assemble the LLM context payload for a conversation turn."""
+        return {
             "message_history": message_history or [],
             "current_message": message,
             "context": {
@@ -95,66 +103,46 @@ class ConversationAgent:
                 "clickup_lists": [lst.model_dump() for lst in context.clickup_lists],
                 "user_preferences": context.user_preferences,
             },
-            "available_tools": _tool_descriptions(tools),
             "agent_instructions": context.agent_system_prompt,
         }
 
-        tool_results: list[dict[str, Any]] = []
-        last_response: ConversationResponse | None = None
+    def _make_executor(self, tools: list[ToolInterface]) -> ToolExecutor:
+        """Return a callback that dispatches native tool calls to registered tools.
 
-        for _ in range(self._max_tool_iterations):
-            llm_context = {**base_context, "tool_results": tool_results}
-            response_data = await self._llm_provider.complete_structured(
-                prompt=prompt,
-                context=llm_context,
-                schema=ConversationResponse,
-            )
-            response = ConversationResponse.model_validate(response_data)
-            last_response = response
-
-            if not response.tool_calls:
-                return response
-
-            tool_results = await self._execute_tool_calls(response.tool_calls, tools)
-
-        return last_response or ConversationResponse(answer="No pude completar la consulta.")
-
-    async def _execute_tool_calls(
-        self,
-        tool_calls: list[ToolCall],
-        tools: list[ToolInterface],
-    ) -> list[dict[str, Any]]:
-        """Execute requested tool calls and return their results.
-
-        Parameters:
-            tool_calls: Tool calls requested by the LLM.
-            tools: Available tools.
-
-        Returns:
-            List of tool results with tool name and result data or error.
+        Only read operations are allowed: writes must be proposed as HITL actions,
+        never executed inline. This enforces the read-only contract even if the
+        model requests an operation outside the schema's advertised enum.
 
         Edge cases:
-            Unknown tools return an error result instead of raising.
+            Unknown tool names, disallowed operations and tool exceptions are
+            returned as error payloads rather than raised, so a single bad call
+            does not abort the turn.
         """
         tool_map = {tool.name: tool for tool in tools}
 
-        async def _run_one(call: ToolCall) -> dict[str, Any]:
-            tool = tool_map.get(call.tool)
+        async def _execute(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+            tool = tool_map.get(name)
             if tool is None:
-                return {"tool": call.tool, "error": f"Tool '{call.tool}' is not available"}
-            try:
-                result: ToolResult = await tool.execute(operation=call.operation, **call.parameters)
+                return {"tool": name, "error": f"Tool '{name}' is not available"}
+            allowed = getattr(tool, "read_operations", []) or []
+            operation = arguments.get("operation")
+            if allowed and operation not in allowed:
                 return {
-                    "tool": call.tool,
-                    "operation": call.operation,
+                    "tool": name,
+                    "error": f"Operation '{operation}' is not permitted here; propose it as an action instead.",
+                }
+            try:
+                result = await tool.execute(**arguments)
+                return {
+                    "tool": name,
                     "success": result.success,
-                    "data": result.data,
+                    "data": _jsonable(result.data),
                     "message": result.message,
                 }
             except Exception as exc:  # noqa: BLE001
-                return {"tool": call.tool, "operation": call.operation, "success": False, "error": str(exc)}
+                return {"tool": name, "success": False, "error": str(exc)}
 
-        return list(await asyncio.gather(*(_run_one(call) for call in tool_calls)))
+        return _execute
 
     async def respond_stream(
         self,
@@ -165,52 +153,21 @@ class ConversationAgent:
     ) -> AsyncIterator[dict[str, Any]]:
         """Like respond(), but streams the final answer as SSE token events.
 
-        Runs tool-call iterations non-streaming until the model produces a response
-        with no tool_calls, then streams that final answer for real-time UX.
+        Resolves any native tool calls non-streaming, then streams the final
+        answer for real-time UX.
 
         Yields dicts:
             {"type": "token", "text": str} — incremental answer text
             {"type": "done", "data": dict} — full ConversationResponse dump
             {"type": "error", "message": str} — on failure
         """
-        prompt = _load_prompt("conversation_v1.txt")
-        base_context = {
-            "message_history": message_history or [],
-            "current_message": message,
-            "context": {
-                "tickets": [ticket.model_dump() for ticket in context.tickets],
-                "ticket_source": context.ticket_source,
-                "week_time": context.week_time.model_dump(),
-                "existing_backlog_ticket_ids": context.existing_backlog_ticket_ids,
-                "clickup_lists": [lst.model_dump() for lst in context.clickup_lists],
-                "user_preferences": context.user_preferences,
-            },
-            "available_tools": _tool_descriptions(tools),
-            "agent_instructions": context.agent_system_prompt,
-        }
-
-        tool_results: list[dict[str, Any]] = []
-        final_context: dict[str, Any] = base_context
-
-        for _ in range(self._max_tool_iterations):
-            llm_context = {**base_context, "tool_results": tool_results}
-            final_context = llm_context
-            response_data = await self._llm_provider.complete_structured(
-                prompt=prompt,
-                context=llm_context,
-                schema=ConversationResponse,
-            )
-            response = ConversationResponse.model_validate(response_data)
-            if not response.tool_calls:
-                # Got final response — stream it now
-                break
-            tool_results = await self._execute_tool_calls(response.tool_calls, tools)
-
-        # Stream the final answer (uses the same accumulated context + tool_results)
-        async for event in self._llm_provider.stream_structured_answer(
-            prompt=prompt,
-            context=final_context,
+        async for event in self._llm_provider.stream_tool_loop(
+            prompt=_load_prompt("conversation_v1.txt"),
+            context=self._build_context(message, context, message_history),
             schema=ConversationResponse,
+            tool_schemas=build_tool_schemas(tools),
+            execute_tool=self._make_executor(tools),
+            max_iterations=self._max_tool_iterations,
         ):
             yield event
 

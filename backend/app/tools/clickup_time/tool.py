@@ -7,7 +7,6 @@ from app.tools.clickup_time_tracking import (
     TimeEntryData,
     build_time_entry_preview,
     get_clickup_client_names,
-    prepare_time_entry,
     save_time_entry,
 )
 
@@ -27,6 +26,7 @@ class ClickUpTimeTool(ToolInterface):
 
     name = "clickup_time"
     description = "Preview and save ClickUp time entries and list available clients."
+    read_operations = ["get_clients"]
     parameters = [
         ToolParameter(name="operation", type="string", description="One of: get_clients, prepare, save"),
         ToolParameter(name="list_id", type="string", description="ClickUp list ID (required for get_clients and save)", required=False, default=""),
@@ -64,7 +64,12 @@ class ClickUpTimeTool(ToolInterface):
                 list_id = self._require(kwargs, "list_id")
                 time_entry = self._build_time_entry_data(kwargs)
                 time_entry["approved"] = kwargs.get("approved", False)
-                message = save_time_entry.invoke({"time_entry": time_entry, "list_id": list_id})
+                message = save_time_entry(time_entry, list_id)
+                if "ERROR" in message:
+                    # Catches both "ERROR: ..." failures and the partial-failure case
+                    # where the ClickUp task was created but the time entry registration
+                    # failed ("Task created (ID: ...) but ERROR registering time entry: ...").
+                    return ToolResult.error(message=message)
                 return ToolResult.ok(data={"message": message}, message=message)
 
             return ToolResult.error(message=f"Unknown operation '{operation}' for clickup_time tool")

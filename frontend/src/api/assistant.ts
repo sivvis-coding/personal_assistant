@@ -87,8 +87,11 @@ export async function streamAssistantMessage(
  * Edge cases:
  *   Backend authentication can reject the request when local key is required.
  */
-export function createAssistantConversation(): Promise<AssistantConversationCreateResponse> {
-  return apiRequest<AssistantConversationCreateResponse>('/assistant/conversations', { method: 'POST' });
+export function createAssistantConversation(targetDate?: string): Promise<AssistantConversationCreateResponse> {
+  return apiRequest<AssistantConversationCreateResponse>('/assistant/conversations', {
+    method: 'POST',
+    body: JSON.stringify(targetDate ? { target_date: targetDate } : {}),
+  });
 }
 
 /**
@@ -189,7 +192,8 @@ export function updateAssistantActionPayload(actionId: string, payload: Record<s
  *   Updated assistant action.
  *
  * Edge cases:
- *   Preparing backlog creates a second approval action before external task creation.
+ *   A single approval executes the action (backlog creation reviews the generated
+ *   user story on the card and creates the ClickUp task on that one approval).
  */
 export function approveAssistantAction(actionId: string): Promise<AssistantAction> {
   return apiRequest<AssistantAction>(`/assistant/actions/${actionId}/approve`, { method: 'POST' });

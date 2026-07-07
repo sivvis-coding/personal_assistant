@@ -84,32 +84,36 @@ class AssistantActionRepository(BaseRepository):
         return self._to_action(serialized) if serialized else None
 
     async def count_pending(self) -> int:
-        """Count actions waiting for user approval.
+        """Count actions waiting for user attention.
 
         Parameters:
             None.
 
         Returns:
-            Number of proposed assistant actions.
+            Number of proposed or failed assistant actions.
 
         Edge cases:
-            Completed, rejected, and failed actions are excluded.
+            Completed and rejected actions are excluded. Failed actions are
+            included because they still need the user to read the error and
+            either retry (re-approve) or reject them.
         """
-        return await self.collection.count_documents({"status": "proposed"})
+        return await self.collection.count_documents({"status": {"$in": ["proposed", "failed"]}})
 
     async def list_pending(self) -> list[AssistantAction]:
-        """List actions waiting for user approval.
+        """List actions waiting for user attention.
 
         Parameters:
             None.
 
         Returns:
-            Proposed assistant actions ordered newest first.
+            Proposed or failed assistant actions ordered newest first.
 
         Edge cases:
-            Completed, rejected, and failed actions are excluded.
+            Completed and rejected actions are excluded. Failed actions are
+            included so the user can see the failure reason instead of it
+            silently disappearing after a failed approval.
         """
-        cursor = self.collection.find({"status": "proposed"}).sort("created_at", -1)
+        cursor = self.collection.find({"status": {"$in": ["proposed", "failed"]}}).sort("created_at", -1)
         actions: list[AssistantAction] = []
         async for document in cursor:
             serialized = self.serialize(document)

@@ -36,3 +36,21 @@ export interface WeekTimeResponse {
   total_hours: number;
   entries: TimeEntry[];
 }
+
+export interface DayTimeSummary {
+  date: string;
+  total_hours: number;
+  entries: TimeEntry[];
+}
+
+export interface MonthTimeResponse {
+  source: string;
+  year: number;
+  month: number;
+  total_hours: number;
+  days: DayTimeSummary[];
+}
+
+export interface PersonalListClientsResponse {
+  clients: string[];
+}

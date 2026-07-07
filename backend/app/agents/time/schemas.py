@@ -77,8 +77,10 @@ class TimeEntryParameters(BaseModel):
             missing.append("descripción del trabajo")
         if self.duration_minutes <= 0:
             missing.append("duración (ej. 2h, 30min)")
-        if self.start_date is None or self.start_time is None:
-            missing.append("fecha y hora de inicio")
+        if self.start_date is None:
+            missing.append("fecha de inicio")
+        if self.start_time is None:
+            missing.append("hora de inicio")
         return missing
 
     def build_start_datetime(self) -> datetime:

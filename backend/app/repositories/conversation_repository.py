@@ -1,3 +1,4 @@
+from datetime import date
 from typing import Any
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -47,11 +48,13 @@ class ConversationRepository(BaseRepository):
         """
         await self.collection.create_index("updated_at")
 
-    async def create_conversation(self) -> str:
+    async def create_conversation(self, target_date: date | None = None) -> str:
         """Create an empty assistant conversation.
 
         Parameters:
-            None.
+            target_date: Optional day this conversation is scoped to (e.g. started
+                from a calendar click), so time-tracking messages in it default to
+                that date instead of requiring it to be spelled out every time.
 
         Returns:
             Conversation document ID.
@@ -59,7 +62,10 @@ class ConversationRepository(BaseRepository):
         Edge cases:
             Source is local because conversations are not synced externally.
         """
-        return await self.insert_document({"messages": []}, source="local_assistant")
+        document: dict[str, Any] = {"messages": []}
+        if target_date is not None:
+            document["target_date"] = target_date.isoformat()
+        return await self.insert_document(document, source="local_assistant")
 
     async def append_turn(self, conversation_id: str, user_message: str, assistant_answer: str, metadata: dict[str, Any]) -> None:
         """Append a user/assistant turn to a conversation.
@@ -118,6 +124,22 @@ class ConversationRepository(BaseRepository):
         else:
             await self.collection.update_one({"_id": self._object_id(conversation_id)}, {"$set": {"pending_state": state}})
 
+    async def get_target_date(self, conversation_id: str) -> date | None:
+        """Load the day this conversation is scoped to, if any.
+
+        Parameters:
+            conversation_id: Conversation document ID.
+
+        Returns:
+            The scoped date, or None for a conversation not tied to one day.
+
+        Edge cases:
+            Invalid IDs raise from BSON conversion.
+        """
+        document = await self.collection.find_one({"_id": self._object_id(conversation_id)}, {"target_date": 1})
+        raw = document.get("target_date") if document else None
+        return date.fromisoformat(raw) if raw else None
+
     async def get_messages(self, conversation_id: str, limit: int = 10) -> list[dict[str, Any]]:
         """Return the most recent conversation turns.
 
@@ -154,8 +176,11 @@ class ConversationRepository(BaseRepository):
 
         Edge cases:
             Empty list when no conversations exist.
+            Conversations scoped to a target_date (day-focused time-tracking popups)
+            are excluded — they are meant to be ephemeral, not part of chat history.
         """
         pipeline = [
+            {"$match": {"target_date": {"$exists": False}}},
             {
                 "$addFields": {
                     "message_count": {"$size": {"$ifNull": ["$messages", []]}},

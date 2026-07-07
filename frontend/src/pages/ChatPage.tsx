@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Badge,
   Box,
@@ -33,6 +33,7 @@ import AccessTimeIcon from '@mui/icons-material/AccessTime';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
+import CalendarMonthIcon from '@mui/icons-material/CalendarMonth';
 import { useChatStore } from '../stores/chatStore';
 import {
   createAssistantConversation,
@@ -113,6 +114,15 @@ function msgId(prefix: string, index: number): string {
 function generateTitle(text: string): string {
   const trimmed = text.trim();
   return trimmed.length > 40 ? `${trimmed.slice(0, 40)}...` : trimmed;
+}
+
+function formatTargetDate(isoDate: string): string {
+  const [year, month, day] = isoDate.split('-').map(Number);
+  return new Date(year, month - 1, day).toLocaleDateString('es-ES', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  });
 }
 
 // ─── sub-components ──────────────────────────────────────────────────────────
@@ -290,11 +300,13 @@ function ActionsPanel() {
 
 export function ChatPage() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const {
     conversationId,
+    targetDate,
     conversations,
     messages,
     isLoading,
@@ -303,6 +315,7 @@ export function ChatPage() {
     awaitingClientConfirmation,
     candidateClients,
     setConversationId,
+    setTargetDate,
     addMessage,
     updateMessage,
     appendToMessage,
@@ -322,6 +335,24 @@ export function ChatPage() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [loadingConvId, setLoadingConvId] = useState<string | null>(null);
+
+  // Arrived from the hours calendar with "?date=YYYY-MM-DD": start a fresh
+  // conversation scoped to that day so the user only needs to describe the
+  // work/hours, not the date itself. The query param is stripped right after
+  // so reloading the page doesn't recreate a conversation every time.
+  useEffect(() => {
+    const dateParam = searchParams.get('date');
+    if (!dateParam) return;
+    setSearchParams({}, { replace: true });
+    resetChat();
+    createAssistantConversation(dateParam)
+      .then((conv) => {
+        setConversationId(conv.conversation_id);
+        setTargetDate(dateParam);
+      })
+      .catch((caught: Error) => setError(caught.message));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     const BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
@@ -350,6 +381,7 @@ export function ChatPage() {
     try {
       const detail = await getAssistantConversation(id);
       setConversationId(id);
+      setTargetDate(detail.target_date ?? null);
       setMessages(
         detail.messages.flatMap((m, i) => [
           { id: `h-u-${i}`, role: 'user' as const, text: m.user_message, actions: [], suggestions: [], timestamp: new Date(m.created_at) },
@@ -553,6 +585,18 @@ export function ChatPage() {
             <Typography variant="body2" color="text.secondary" sx={{ fontFamily: 'monospace', fontSize: 11 }}>
               {conversationId ? `#${conversationId.slice(-8)}` : 'sin conversación'}
             </Typography>
+            {targetDate && (
+              <Tooltip title="Cuéntame la actividad y las horas: la fecha ya está fijada. Clic para quitarla.">
+                <Chip
+                  icon={<CalendarMonthIcon />}
+                  label={`Imputando: ${formatTargetDate(targetDate)}`}
+                  size="small"
+                  color="primary"
+                  variant="outlined"
+                  onDelete={() => resetChat()}
+                />
+              </Tooltip>
+            )}
             {agentModel && (
               <Typography variant="body2" color="text.disabled" sx={{ fontFamily: 'monospace', fontSize: 11 }}>
                 {agentModel}

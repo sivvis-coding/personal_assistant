@@ -1,9 +1,27 @@
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel, Field
 
 from app.assistant.schemas.actions import AssistantAction
 from app.assistant.schemas.recommendations import PrioritizedWorkPlan, TicketRecommendation
+
+
+class AssistantConversationCreateRequest(BaseModel):
+    """Represent the optional body for creating a new conversation.
+
+    Parameters:
+        target_date: Optional day this conversation is scoped to (e.g. started
+            from a calendar click), so time-tracking messages default their
+            date to it instead of requiring it to be spelled out every time.
+
+    Returns:
+        Validated conversation creation input.
+
+    Edge cases:
+        Omitted entirely, a conversation is not scoped to any particular day.
+    """
+
+    target_date: date | None = None
 
 
 class AssistantMessageRequest(BaseModel):
@@ -112,6 +130,7 @@ class ConversationDetailResponse(BaseModel):
         messages: All conversation turns.
         created_at: When the conversation was created.
         updated_at: Last activity timestamp.
+        target_date: Day this conversation is scoped to, if started from a calendar click.
 
     Returns:
         Complete conversation for detail view.
@@ -122,3 +141,4 @@ class ConversationDetailResponse(BaseModel):
     messages: list[ConversationMessage]
     created_at: datetime
     updated_at: datetime
+    target_date: date | None = None

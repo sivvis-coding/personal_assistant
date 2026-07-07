@@ -27,7 +27,13 @@ export function ActionsPage() {
   }, [setPendingActions, setLoading, setError]);
 
   async function handleDone(updated: AssistantAction) {
-    removeAction(updated.id);
+    // Keep failed actions visible so the user can read the error and retry —
+    // only completed/rejected actions are truly done and safe to remove locally.
+    // The backend's pending list also includes "failed" actions, so the refetch
+    // below brings it right back regardless.
+    if (updated.status !== 'failed') {
+      removeAction(updated.id);
+    }
     updateChatPendingAction(updated);
     setRefreshing(true);
     try {

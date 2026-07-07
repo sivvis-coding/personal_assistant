@@ -1,10 +1,11 @@
 import logging
 from collections.abc import AsyncIterator
+from datetime import date
 
 from app.agents.conversation.agent import ConversationAgent
 from app.agents.conversation.schemas import ConversationResponse
 from app.agents.time.agent import TimeAgent
-from app.agents.time.schemas import ActivityResolution, TimeEntryParameters
+from app.agents.time.schemas import ActivityResolution, TimeAgentResult, TimeEntryParameters
 from app.assistant.context_builder import AssistantContextBuilder
 from app.assistant.schemas.actions import AssistantAction, AssistantActionCreate
 from app.assistant.schemas.conversation import AssistantMessageResponse, ConversationDetailResponse, ConversationSummaryResponse
@@ -16,6 +17,39 @@ from app.tools.base import ToolInterface, ToolRegistry, ToolResult
 
 
 logger = logging.getLogger(__name__)
+
+# Phrases that let the user back out of a pending follow-up (client confirmation
+# or narrative completion) instead of having the whole message consumed as a reply
+# to it. When matched, the pending state is cleared and the message is routed
+# normally, so "olvídalo, revisa mis tickets" changes topic cleanly.
+CANCELLATION_PHRASES = (
+    "cancela",
+    "cancelar",
+    "olvidalo",
+    "olvídalo",
+    "olvida",
+    "dejalo",
+    "déjalo",
+    "deja eso",
+    "no importa",
+    "da igual",
+    "mejor no",
+    "cambia de tema",
+    "otra cosa",
+)
+
+
+def _is_cancellation(message: str) -> bool:
+    """Return whether a message backs out of a pending follow-up.
+
+    Matches only at the start of the message (or the whole message) so ordinary
+    replies that merely contain a word like "cancela" are not misread as a cancel.
+    """
+    normalized = " ".join(message.lower().strip().split())
+    return any(
+        normalized == phrase or normalized.startswith(f"{phrase} ") or normalized.startswith(f"{phrase},")
+        for phrase in CANCELLATION_PHRASES
+    )
 
 
 class AssistantConversationService:
@@ -125,13 +159,16 @@ class AssistantConversationService:
             ],
             created_at=raw["created_at"],
             updated_at=raw["updated_at"],
+            target_date=raw.get("target_date"),
         )
 
-    async def create_conversation(self) -> str:
+    async def create_conversation(self, target_date: date | None = None) -> str:
         """Create a new assistant conversation.
 
         Parameters:
-            None.
+            target_date: Optional day this conversation is scoped to (e.g. started
+                from a calendar click), so time-tracking messages default their
+                date to it instead of requiring it to be spelled out every time.
 
         Returns:
             Conversation ID.
@@ -139,7 +176,7 @@ class AssistantConversationService:
         Edge cases:
             Conversation has no operational context until the first message.
         """
-        return await self._conversation_repository.create_conversation()
+        return await self._conversation_repository.create_conversation(target_date)
 
     async def handle_message(self, conversation_id: str, message: str) -> AssistantMessageResponse:
         """Handle a user message and return the assistant response.
@@ -156,11 +193,20 @@ class AssistantConversationService:
             Pending clarification state is checked before routing.
         """
         pending_state = await self._conversation_repository.get_pending_state(conversation_id)
-        if pending_state is not None and pending_state.get("type") == "client_confirmation":
-            return await self._handle_client_confirmation(conversation_id, pending_state, message)
+        target_date = await self._conversation_repository.get_target_date(conversation_id)
 
-        if TimeAgent.is_time_tracking_request(message):
-            return await self._handle_time_tracking_message(conversation_id, message)
+        if pending_state is not None and _is_cancellation(message):
+            # Let the user back out of a pending follow-up and change topic cleanly
+            # instead of consuming this message as a reply to it.
+            await self._conversation_repository.set_pending_state(conversation_id, None)
+        elif pending_state is not None and pending_state.get("type") == "client_confirmation_queue":
+            return await self._handle_client_confirmation(conversation_id, pending_state, message)
+        elif pending_state is not None and pending_state.get("type") == "narrative_completion":
+            return await self._handle_narrative_completion(conversation_id, pending_state, message, target_date)
+
+        time_result = await self._maybe_process_time_tracking(message, target_date)
+        if time_result is not None:
+            return await self._finish_time_tracking_message(conversation_id, message, time_result)
 
         context = await self._context_builder.build()
         message_history = await self._conversation_repository.get_messages(conversation_id, limit=10)
@@ -227,14 +273,24 @@ class AssistantConversationService:
         they don't call the conversation agent.
         """
         pending_state = await self._conversation_repository.get_pending_state(conversation_id)
-        if pending_state is not None and pending_state.get("type") == "client_confirmation":
+        target_date = await self._conversation_repository.get_target_date(conversation_id)
+
+        if pending_state is not None and _is_cancellation(message):
+            await self._conversation_repository.set_pending_state(conversation_id, None)
+        elif pending_state is not None and pending_state.get("type") == "client_confirmation_queue":
             response = await self._handle_client_confirmation(conversation_id, pending_state, message)
             yield {"type": "token", "text": response.answer}
             yield {"type": "done", "data": response.model_dump(mode="json")}
             return
+        elif pending_state is not None and pending_state.get("type") == "narrative_completion":
+            response = await self._handle_narrative_completion(conversation_id, pending_state, message, target_date)
+            yield {"type": "token", "text": response.answer}
+            yield {"type": "done", "data": response.model_dump(mode="json")}
+            return
 
-        if TimeAgent.is_time_tracking_request(message):
-            response = await self._handle_time_tracking_message(conversation_id, message)
+        time_result = await self._maybe_process_time_tracking(message, target_date)
+        if time_result is not None:
+            response = await self._finish_time_tracking_message(conversation_id, message, time_result)
             yield {"type": "token", "text": response.answer}
             yield {"type": "done", "data": response.model_dump(mode="json")}
             return
@@ -299,8 +355,36 @@ class AssistantConversationService:
         )
         yield {"type": "done", "data": final_response.model_dump(mode="json")}
 
-    async def _handle_time_tracking_message(self, conversation_id: str, message: str) -> AssistantMessageResponse:
-        """Route a daily narrative to the TimeAgent and persist proposed actions.
+    async def _maybe_process_time_tracking(
+        self, message: str, target_date: date | None = None
+    ) -> TimeAgentResult | None:
+        """Route a message to the TimeAgent only on explicit time-tracking intent.
+
+        The TimeAgent runs only when the message carries an explicit keyword
+        ("imputa", "registra tiempo", ...). This is deliberate: previously every
+        message was speculatively run through the LLM extractor, which could
+        hijack ordinary chat ("ayer miré el ticket de X, ¿qué opinas?") into a
+        time entry. Explicit-only routing trades that magic for predictability —
+        the agent never silently reinterprets a normal message as logged hours.
+
+        Parameters:
+            message: User message text.
+            target_date: Day this conversation is scoped to, if any (e.g. started
+                from a calendar click) — activities with no date mentioned default
+                to it instead of requiring the user to spell it out.
+
+        Returns:
+            The TimeAgentResult when the message is an explicit time request,
+            or None to fall back to the conversation agent.
+        """
+        if not TimeAgent.is_time_tracking_request(message):
+            return None
+        return await self._time_agent.process(message, target_date=target_date)
+
+    async def _finish_time_tracking_message(
+        self, conversation_id: str, message: str, time_result: TimeAgentResult
+    ) -> AssistantMessageResponse:
+        """Persist proposed actions and pending confirmations for a TimeAgent result.
 
         A single message may describe several activities. Fully resolved
         activities each get their own pending `save_time_entry` action;
@@ -310,6 +394,7 @@ class AssistantConversationService:
         Parameters:
             conversation_id: Existing conversation ID.
             message: User message text.
+            time_result: Result already computed by `_maybe_process_time_tracking`.
 
         Returns:
             Assistant message response with pending time entry actions for
@@ -318,18 +403,33 @@ class AssistantConversationService:
         Edge cases:
             No identifiable activity returns success=False and no pending actions.
         """
-        time_result = await self._time_agent.process(message)
         resolved = [a for a in time_result.activities if a.success and not a.needs_clarification]
         pending = [a for a in time_result.activities if a.needs_clarification]
+        incomplete = [a for a in time_result.activities if not a.success and not a.needs_clarification]
         actions = await self._create_time_entry_actions(resolved)
 
         if pending:
+            # Client ambiguity takes priority over missing-field completion — the user
+            # resolves one queued client at a time before this narrative can complete.
             await self._conversation_repository.set_pending_state(
                 conversation_id,
                 {
                     "type": "client_confirmation_queue",
                     "list_id": time_result.list_id,
                     "queue": [_activity_to_queue_item(activity) for activity in pending],
+                },
+            )
+        elif incomplete:
+            # Remember the structured activities (task/description/client already known)
+            # so the next reply only fills in the remaining gaps, instead of forcing the
+            # user to restate everything or risking the LLM re-deriving (and dropping)
+            # fields — like the client — that were already correctly extracted.
+            await self._conversation_repository.set_pending_state(
+                conversation_id,
+                {
+                    "type": "narrative_completion",
+                    "list_id": time_result.list_id,
+                    "activities": [activity.parameters.model_dump(mode="json") for activity in incomplete],
                 },
             )
         else:
@@ -353,6 +453,41 @@ class AssistantConversationService:
             proposed_actions=actions,
             next_suggestions=[],
         )
+
+    async def _handle_narrative_completion(
+        self,
+        conversation_id: str,
+        pending_state: dict,
+        message: str,
+        target_date: date | None = None,
+    ) -> AssistantMessageResponse:
+        """Merge a follow-up reply into previously incomplete activities.
+
+        Users naturally answer "necesito más datos" prompts with just the
+        missing pieces (e.g. "el ref tech fue de 9 a 10:30..."), often
+        covering several activities in one free-text reply. The already-known
+        fields (task, description, client) are passed to the LLM alongside the
+        reply and explicitly preserved — only the still-missing fields
+        (duration/date/time, or client if it was never resolved) are filled in.
+
+        Parameters:
+            conversation_id: Existing conversation ID.
+            pending_state: Stored activities awaiting completion, with their list_id.
+            message: The user's follow-up reply.
+            target_date: Day this conversation is scoped to, if any — still-missing
+                dates default to it instead of requiring the user to spell it out.
+
+        Returns:
+            Assistant message response, same shape as a fresh time-tracking message.
+        """
+        list_id = pending_state.get("list_id", "")
+        pending_activities = [
+            TimeEntryParameters.model_validate(activity) for activity in pending_state.get("activities", [])
+        ]
+        time_result = await self._time_agent.complete_pending_activities(
+            pending_activities, message, list_id, target_date=target_date
+        )
+        return await self._finish_time_tracking_message(conversation_id, message, time_result)
 
     async def _handle_client_confirmation(
         self,
@@ -536,12 +671,13 @@ class AssistantConversationService:
         """
         actions: list[AssistantAction] = []
         for action_create in response.proposed_actions:
+            payload = await self._with_generated_user_story(action_create)
             tool_result: ToolResult = await self._assistant_action_tool.execute(
                 operation="create",
                 action_type=action_create.action_type,
                 title=action_create.title,
                 description=action_create.description,
-                payload=action_create.payload,
+                payload=payload,
                 ticket_id=action_create.ticket_id,
             )
             if tool_result.success and tool_result.data is not None:
@@ -549,6 +685,42 @@ class AssistantConversationService:
             else:
                 logger.warning("Failed to create proposed action: %s", tool_result.message)
         return actions
+
+    async def _with_generated_user_story(self, action_create: AssistantActionCreate) -> dict:
+        """Generate the ClickUp user story at propose time for task-creation actions.
+
+        Embedding the draft in the payload lets the user review and edit it on the
+        action card and approve the task in a single step (no second approval).
+
+        Parameters:
+            action_create: Proposed action from the conversation agent.
+
+        Returns:
+            The action payload, augmented with a 'user_story' for create-task
+            actions. On generation failure the payload is returned unchanged; the
+            executor regenerates the story as a fallback at approval time.
+        """
+        payload = dict(action_create.payload)
+        if action_create.action_type not in ("send_ticket_to_backlog", "prepare_clickup_us"):
+            return payload
+        if payload.get("user_story") or not self._tool_registry.has_tool("ticket_to_clickup"):
+            return payload
+
+        tool = self._tool_registry.get("ticket_to_clickup")
+        try:
+            if action_create.action_type == "send_ticket_to_backlog" and action_create.ticket_id:
+                result = await tool.execute(operation="prepare", ticket_id=action_create.ticket_id)
+            else:
+                result = await tool.execute(
+                    operation="prepare_standalone", description=str(payload.get("description", ""))
+                )
+        except Exception:  # noqa: BLE001
+            logger.warning("User story generation failed at propose time; deferring to approval.")
+            return payload
+
+        if result.success and isinstance(result.data, dict) and result.data.get("user_story"):
+            payload["user_story"] = result.data["user_story"]
+        return payload
 
 
 def _activity_to_queue_item(activity: ActivityResolution) -> dict:

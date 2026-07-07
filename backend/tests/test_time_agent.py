@@ -73,10 +73,49 @@ class FakeClickUpTimeTool(ToolInterface):
 class FakeNarrativeExtractor:
     """Deterministic stand-in for DailyNarrativeExtractor in tests."""
 
+    def __init__(
+        self,
+        activities: list[TimeEntryParameters],
+        completed: list[TimeEntryParameters] | None = None,
+    ) -> None:
+        self._activities = activities
+        self._completed = completed
+
+    async def extract(
+        self,
+        message: str,
+        today: date,
+        known_clients: list[str] | None = None,
+        assume_today_if_missing: bool = False,
+    ) -> list[TimeEntryParameters]:
+        return self._activities
+
+    async def complete(
+        self,
+        pending_activities: list[TimeEntryParameters],
+        message: str,
+        today: date,
+        known_clients: list[str] | None = None,
+        assume_today_if_missing: bool = False,
+    ) -> list[TimeEntryParameters]:
+        return self._completed if self._completed is not None else pending_activities
+
+
+class RecordingNarrativeExtractor:
+    """Narrative extractor stand-in that records the known_clients it received."""
+
     def __init__(self, activities: list[TimeEntryParameters]) -> None:
         self._activities = activities
+        self.received_known_clients: list[str] | None = None
 
-    async def extract(self, message: str, today: date) -> list[TimeEntryParameters]:
+    async def extract(
+        self,
+        message: str,
+        today: date,
+        known_clients: list[str] | None = None,
+        assume_today_if_missing: bool = False,
+    ) -> list[TimeEntryParameters]:
+        self.received_known_clients = known_clients
         return self._activities
 
 
@@ -177,6 +216,50 @@ async def test_should_resolve_multiple_activities_independently() -> None:
 
 
 @pytest.mark.asyncio
+async def test_should_pass_known_clients_to_extractor_for_context_inference() -> None:
+    """Verify the agent fetches configured clients before extraction so the LLM can
+    infer a client from department/project context (e.g. "para dev") instead of
+    requiring an explicit "cliente X" phrase.
+    """
+    extractor = RecordingNarrativeExtractor(
+        [
+            TimeEntryParameters(
+                task_name="Refinamiento tech",
+                client_name="Dev",
+                description="Refinamiento tech para dev",
+                duration_minutes=120,
+                start_date=date(2026, 6, 1),
+                start_time=time(9, 0),
+            ),
+            TimeEntryParameters(
+                task_name="Reunión image recognition",
+                client_name="Inno",
+                description="Reunión sobre image recognition",
+                duration_minutes=90,
+                start_date=date(2026, 6, 1),
+                start_time=time(16, 0),
+            ),
+        ]
+    )
+    agent = TimeAgent(
+        memory_facade=FakeMemoryFacade(),
+        narrative_extractor=extractor,
+        settings_service=FakeSettingsService(),
+        clickup_time_tool=FakeClickUpTimeTool(clients=["Dev", "Inno"]),
+    )
+
+    result = await agent.process(
+        "El 1 de junio estuve haciendo refinamiento tech para dev y por la tarde en una "
+        "reunión para innovación sobre image recognition"
+    )
+
+    assert extractor.received_known_clients == ["Dev", "Inno"]
+    assert result.success is True
+    assert result.activities[0].action_payload["client_name"] == "Dev"
+    assert result.activities[1].action_payload["client_name"] == "Inno"
+
+
+@pytest.mark.asyncio
 async def test_should_ask_for_client_clarification_without_blocking_other_activities() -> None:
     """Verify an ambiguous client only pends its own activity, not the whole batch."""
     activities = [
@@ -226,6 +309,43 @@ async def test_should_resolve_pending_activity_with_confirmed_client() -> None:
 
     assert resolution.success is True
     assert resolution.action_payload["client_name"] == "Acme"
+
+
+@pytest.mark.asyncio
+async def test_should_preserve_client_when_completing_pending_activities() -> None:
+    """Verify complete_pending_activities fills gaps without losing an already-known client.
+
+    Regression test: an earlier design re-ran full narrative extraction on
+    every completion round, which could cause the LLM to drop a client it had
+    already correctly identified in the first pass.
+    """
+    pending = TimeEntryParameters(
+        task_name="Refinamiento tech",
+        client_name="1200-DV - Desarrollo interno",
+        description="Refinamiento tech para dev",
+        duration_minutes=0,
+        start_date=None,
+        start_time=None,
+    )
+    completed = TimeEntryParameters(
+        task_name="Refinamiento tech",
+        client_name="1200-DV - Desarrollo interno",
+        description="Refinamiento tech para dev",
+        duration_minutes=90,
+        start_date=date(2026, 6, 1),
+        start_time=time(9, 0),
+    )
+    agent = TimeAgent(
+        memory_facade=FakeMemoryFacade(),
+        narrative_extractor=FakeNarrativeExtractor([], completed=[completed]),
+        settings_service=FakeSettingsService(),
+        clickup_time_tool=FakeClickUpTimeTool(),
+    )
+
+    result = await agent.complete_pending_activities([pending], "duró de 9 a 10:30", list_id="list-1")
+
+    assert result.success is True
+    assert result.activities[0].action_payload["client_name"] == "1200-DV - Desarrollo interno"
 
 
 @pytest.mark.asyncio
@@ -282,6 +402,50 @@ def test_should_reject_save_time_entry_payload_missing_end_datetime() -> None:
     )
 
     with pytest.raises(ValueError, match="Invalid save_time_entry payload"):
+        policy.ensure_can_execute(action)
+
+
+def test_should_allow_retrying_a_failed_save_time_entry_action() -> None:
+    """Verify a failed action can be re-approved, since nothing was created on failure."""
+    policy = AssistantSafetyPolicy()
+    action = AssistantAction(
+        id="action-1",
+        action_type="save_time_entry",
+        status="failed",
+        title="Imputar 60 min",
+        description="Preview",
+        payload={
+            "task_name": "Soporte",
+            "description": "Revisión",
+            "start_datetime": "2026-06-29T09:00:00",
+            "end_datetime": "2026-06-29T10:00:00",
+            "client_name": "Acme",
+        },
+        result={"message": "ERROR: Could not resolve client 'Acme'.", "error": True},
+    )
+
+    policy.ensure_can_execute(action)  # must not raise
+
+
+def test_should_reject_retrying_a_completed_action() -> None:
+    """Verify completed actions still cannot be replayed."""
+    policy = AssistantSafetyPolicy()
+    action = AssistantAction(
+        id="action-1",
+        action_type="save_time_entry",
+        status="completed",
+        title="Imputar 60 min",
+        description="Preview",
+        payload={
+            "task_name": "Soporte",
+            "description": "Revisión",
+            "start_datetime": "2026-06-29T09:00:00",
+            "end_datetime": "2026-06-29T10:00:00",
+            "client_name": "Acme",
+        },
+    )
+
+    with pytest.raises(ValueError, match="Only proposed or failed actions"):
         policy.ensure_can_execute(action)
 
 

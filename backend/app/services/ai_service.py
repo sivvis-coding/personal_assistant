@@ -75,3 +75,17 @@ class AiService:
             Conservative mock output is used without OpenAI key.
         """
         return await self._openai_client.ticket_to_user_story(ticket)
+
+    async def text_to_user_story(self, description: str) -> UserStory:
+        """Convert a free-text chat request into a user story, with no source ticket.
+
+        Parameters:
+            description: User's free-text description of what they want built.
+
+        Returns:
+            Structured user story.
+
+        Edge cases:
+            Missing OpenAI key uses mock output.
+        """
+        return await self._openai_client.text_to_user_story(description)

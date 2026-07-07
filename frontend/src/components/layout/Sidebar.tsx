@@ -21,6 +21,7 @@ import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import SettingsIcon from '@mui/icons-material/Settings';
 import LinkIcon from '@mui/icons-material/Link';
+import CalendarMonthIcon from '@mui/icons-material/CalendarMonth';
 import { useActionsStore } from '../../stores/actionsStore';
 
 const DRAWER_WIDTH = 240;
@@ -57,6 +58,7 @@ export function Sidebar() {
     { label: 'Acciones', path: '/actions', icon: <AssignmentTurnedInIcon />, badge: pendingCount },
     { label: 'Tickets', path: '/tickets', icon: <ConfirmationNumberIcon /> },
     { label: 'Tareas', path: '/linked-tasks', icon: <LinkIcon /> },
+    { label: 'Calendario de horas', path: '/time-calendar', icon: <CalendarMonthIcon /> },
     { label: 'Configuración', path: '/settings', icon: <SettingsIcon /> },
   ];
 

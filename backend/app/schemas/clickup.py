@@ -1,6 +1,6 @@
 from datetime import date
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.schemas.ai import UserStory
 
@@ -155,3 +155,67 @@ class WeekTimeResponse(BaseModel):
     week_end: date
     total_hours: float
     entries: list[TimeEntry]
+
+
+class DayTimeSummary(BaseModel):
+    """Represent one calendar day's logged time.
+
+    Parameters:
+        date: The calendar day.
+        total_hours: Sum of entry hours logged that day.
+        entries: Individual time entries logged that day.
+
+    Returns:
+        Day time summary value object.
+
+    Edge cases:
+        Days with no logged time have total_hours=0 and an empty entries list.
+    """
+
+    date: date
+    total_hours: float
+    entries: list[TimeEntry] = Field(default_factory=list)
+
+
+class MonthTimeResponse(BaseModel):
+    """Represent a full month's ClickUp time, one summary per calendar day.
+
+    Parameters:
+        source: clickup or mock.
+        year: Calendar year.
+        month: Calendar month (1-12).
+        total_hours: Sum of all entry hours in the month.
+        days: One DayTimeSummary per day in the month, in order, including
+            days with no logged time.
+
+    Returns:
+        Monthly time report suitable for a calendar view.
+
+    Edge cases:
+        Future days within the month are included with total_hours=0, same as
+        past days with no entries — the frontend decides how to distinguish them.
+    """
+
+    source: str
+    year: int
+    month: int
+    total_hours: float
+    days: list[DayTimeSummary]
+
+
+class PersonalListClientsResponse(BaseModel):
+    """Represent the valid client options for the personal ClickUp list.
+
+    Parameters:
+        clients: Exact client values configured on the "Cliente" dropdown/label
+            field, so the frontend can offer a selector instead of free text.
+
+    Returns:
+        Client options response.
+
+    Edge cases:
+        Empty when no personal list is configured, the field is missing, or
+        the field allows free text instead of fixed options.
+    """
+
+    clients: list[str] = Field(default_factory=list)

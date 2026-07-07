@@ -87,11 +87,11 @@ async def test_respond_parses_proposed_actions() -> None:
                 "clarification_question": "",
                 "proposed_actions": [
                     {
-                        "action_type": "prepare_clickup_task",
-                        "title": "Preparar tarea para ticket 1001",
-                        "description": "Crear user story a partir del ticket",
+                        "action_type": "send_ticket_to_backlog",
+                        "title": "Pasar ticket 1001 al backlog",
+                        "description": "Crear tarea en ClickUp a partir del ticket",
                         "ticket_id": "1001",
-                        "payload": {"subject": "Test ticket"},
+                        "payload": {"body": "Lo pasamos a backlog"},
                     }
                 ],
             }
@@ -103,7 +103,7 @@ async def test_respond_parses_proposed_actions() -> None:
     assert len(result.proposed_actions) == 1
     action = result.proposed_actions[0]
     assert isinstance(action, AssistantActionCreate)
-    assert action.action_type == "prepare_clickup_task"
+    assert action.action_type == "send_ticket_to_backlog"
     assert action.ticket_id == "1001"
 
 
@@ -121,19 +121,22 @@ class FakeTool(ToolInterface):
         return ToolResult.ok(data=self._response_data)
 
 
-class MultiTurnFakeLLMProvider(LLMProvider):
-    """Fake LLM provider that returns different responses on each call."""
+class ToolInvokingProvider(LLMProvider):
+    """Fake provider that drives the agent's native tool executor.
 
-    def __init__(self, responses: list[dict]) -> None:
-        self._responses = responses
-        self._call_index = 0
+    It records the tool schemas it was handed and dispatches each requested
+    (name, args) pair through the agent-supplied ``execute_tool`` callback so
+    tests can assert on how the agent wires tools without a real OpenAI client.
+    """
+
+    def __init__(self, calls: list[tuple[str, dict]]) -> None:
+        self._calls = calls
+        self.tool_results: list[dict] = []
+        self.tool_schemas: list[dict] | None = None
         self.last_context: dict | None = None
 
     async def complete(self, prompt: str, context: dict | None = None) -> str:
-        self.last_context = context
-        response = self._responses[self._call_index]
-        self._call_index = min(self._call_index + 1, len(self._responses) - 1)
-        return response.get("answer", "")
+        return ""
 
     async def complete_structured(
         self,
@@ -141,10 +144,27 @@ class MultiTurnFakeLLMProvider(LLMProvider):
         context: dict | None = None,
         schema: type | None = None,
     ) -> dict:
+        return {"answer": ""}
+
+    async def run_tool_loop(
+        self,
+        prompt: str,
+        context: dict | None = None,
+        schema: type | None = None,
+        tool_schemas: list[dict] | None = None,
+        execute_tool=None,
+        max_iterations: int = 4,
+    ) -> dict:
         self.last_context = context
-        response = self._responses[self._call_index]
-        self._call_index = min(self._call_index + 1, len(self._responses) - 1)
-        return response
+        self.tool_schemas = tool_schemas
+        for name, args in self._calls:
+            self.tool_results.append(await execute_tool(name, args))
+        return {
+            "answer": f"Resolví {len(self.tool_results)} llamada(s).",
+            "needs_clarification": False,
+            "clarification_question": "",
+            "proposed_actions": [],
+        }
 
 
 def test_is_time_tracking_request_delegates_to_time_agent() -> None:
@@ -154,67 +174,63 @@ def test_is_time_tracking_request_delegates_to_time_agent() -> None:
 
 
 @pytest.mark.asyncio
-async def test_respond_executes_tool_calls_and_returns_final_answer() -> None:
-    """The agent calls tools when requested and returns the final LLM answer."""
-    agent = ConversationAgent(
-        llm_provider=MultiTurnFakeLLMProvider(
-            [
-                {
-                    "answer": "",
-                    "tool_calls": [
-                        {"tool": "freshservice", "operation": "list", "parameters": {"scope": "mine"}}
-                    ],
-                    "needs_clarification": False,
-                    "clarification_question": "",
-                    "proposed_actions": [],
-                },
-                {
-                    "answer": "Tienes 2 tickets abiertos.",
-                    "tool_calls": [],
-                    "needs_clarification": False,
-                    "clarification_question": "",
-                    "proposed_actions": [],
-                },
-            ]
-        )
-    )
+async def test_respond_dispatches_native_tool_calls() -> None:
+    """The agent exposes tools as schemas and dispatches native calls to them."""
+    provider = ToolInvokingProvider([("freshservice", {"operation": "list", "scope": "mine"})])
+    agent = ConversationAgent(llm_provider=provider)
     tool = FakeTool({"tickets": [{"id": "1"}, {"id": "2"}]})
 
     result = await agent.respond("¿Cuántos tickets tengo?", make_context(), tools=[tool])
 
-    assert result.answer == "Tienes 2 tickets abiertos."
-    assert result.tool_calls == []
+    # Tool was exposed as a native function schema.
+    assert provider.tool_schemas is not None
+    assert provider.tool_schemas[0]["function"]["name"] == "freshservice"
+    # The agent's executor ran the tool and returned its data.
+    assert provider.tool_results[0]["success"] is True
+    assert provider.tool_results[0]["data"] == {"tickets": [{"id": "1"}, {"id": "2"}]}
+    assert result.answer == "Resolví 1 llamada(s)."
 
 
 @pytest.mark.asyncio
-async def test_respond_skips_unknown_tools() -> None:
-    """The agent reports errors for unknown tools without crashing."""
-    agent = ConversationAgent(
-        llm_provider=MultiTurnFakeLLMProvider(
-            [
-                {
-                    "answer": "",
-                    "tool_calls": [
-                        {"tool": "unknown_tool", "operation": "list", "parameters": {}}
-                    ],
-                    "needs_clarification": False,
-                    "clarification_question": "",
-                    "proposed_actions": [],
-                },
-                {
-                    "answer": "No pude consultar la tool solicitada.",
-                    "tool_calls": [],
-                    "needs_clarification": False,
-                    "clarification_question": "",
-                    "proposed_actions": [],
-                },
-            ]
-        )
-    )
+async def test_respond_reports_unknown_tools_without_crashing() -> None:
+    """The agent's executor returns an error payload for unknown tool names."""
+    provider = ToolInvokingProvider([("unknown_tool", {"operation": "list"})])
+    agent = ConversationAgent(llm_provider=provider)
 
     result = await agent.respond("Consulta datos", make_context(), tools=[])
 
-    assert "No pude consultar" in result.answer
+    assert "error" in provider.tool_results[0]
+    assert "not available" in provider.tool_results[0]["error"]
+    assert result.answer == "Resolví 1 llamada(s)."
+
+
+class ReadOnlyTool(ToolInterface):
+    """Tool that only permits read operations."""
+
+    name = "freshservice"
+    description = "Read Freshservice tickets."
+    read_operations = ["list", "get"]
+    parameters = []
+
+    def __init__(self) -> None:
+        self.executed = False
+
+    async def execute(self, **kwargs) -> ToolResult:
+        self.executed = True
+        return ToolResult.ok(data={"ok": True})
+
+
+@pytest.mark.asyncio
+async def test_executor_blocks_write_operations() -> None:
+    """A non-read operation is rejected without invoking the tool (HITL guard)."""
+    provider = ToolInvokingProvider([("freshservice", {"operation": "reply", "body": "x"})])
+    agent = ConversationAgent(llm_provider=provider)
+    tool = ReadOnlyTool()
+
+    await agent.respond("Responde el ticket", make_context(), tools=[tool])
+
+    assert tool.executed is False
+    assert "not permitted" in provider.tool_results[0]["error"]
 
 
 @pytest.mark.asyncio

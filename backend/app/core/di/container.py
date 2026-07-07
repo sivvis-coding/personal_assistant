@@ -7,8 +7,6 @@ from app.agents.clickup_status_sync.agent import ClickUpStatusSyncAgent
 from app.agents.freshservice.agent import FreshserviceAgent
 from app.agents.notification.agent import NotificationAgent
 from app.agents.planner.agent import PlannerAgent
-from app.agents.prioritization.agent import PrioritizationAgent
-from app.agents.triage.agent import TicketTriageAgent
 from app.core.config import Settings
 from app.core.constants import DEFAULT_USER_ID
 from app.core.llm.provider import LLMProvider
@@ -116,14 +114,6 @@ class Container(containers.DeclarativeContainer):
     )
     notification_agent = providers.Singleton(
         NotificationAgent,
-        memory_facade=memory_facade,
-    )
-    ticket_triage_agent = providers.Singleton(
-        TicketTriageAgent,
-        memory_facade=memory_facade,
-    )
-    prioritization_agent = providers.Singleton(
-        PrioritizationAgent,
         memory_facade=memory_facade,
     )
     freshservice_adapter = providers.Singleton(

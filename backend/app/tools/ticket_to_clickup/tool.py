@@ -40,11 +40,12 @@ class TicketToClickUpTool(ToolInterface):
     """
 
     name = "ticket_to_clickup"
-    description = "Prepare and approve ClickUp tasks from Freshservice tickets."
+    description = "Prepare and approve ClickUp tasks from Freshservice tickets, or standalone from a chat description."
     parameters = [
-        ToolParameter(name="operation", type="string", description="One of: prepare, approve"),
-        ToolParameter(name="ticket_id", type="string", description="Freshservice ticket identifier"),
-        ToolParameter(name="user_story", type="object", description="Reviewed user story for approve", required=False),
+        ToolParameter(name="operation", type="string", description="One of: prepare, approve, prepare_standalone, approve_standalone"),
+        ToolParameter(name="ticket_id", type="string", description="Freshservice ticket identifier", required=False),
+        ToolParameter(name="description", type="string", description="Free-text request for prepare_standalone", required=False),
+        ToolParameter(name="user_story", type="object", description="Reviewed user story for approve/approve_standalone", required=False),
     ]
 
     def __init__(
@@ -106,6 +107,18 @@ class TicketToClickUpTool(ToolInterface):
                 list_id = kwargs.get("list_id") or None
                 response = await self._approve(ticket_id, user_story, list_id=list_id)
                 return ToolResult.ok(data=response.model_dump(mode="json"), message="ClickUp task created")
+
+            if operation == "prepare_standalone":
+                description = self._require(kwargs, "description")
+                data = await self._prepare_standalone(description)
+                return ToolResult.ok(data=data, message="ClickUp task proposal ready")
+
+            if operation == "approve_standalone":
+                user_story_data = self._require(kwargs, "user_story")
+                user_story = UserStory.model_validate(user_story_data)
+                list_id = kwargs.get("list_id") or None
+                data = await self._approve_standalone(user_story, list_id=list_id)
+                return ToolResult.ok(data=data, message="ClickUp task created")
 
             return ToolResult.error(message=f"Unknown operation '{operation}' for ticket_to_clickup tool")
         except Exception as exc:  # noqa: BLE001
@@ -211,6 +224,77 @@ class TicketToClickUpTool(ToolInterface):
                 workflow_run_id=run_id,
             )
             await self._workflow_run_repository.finish_success(run_id, response.model_dump())
+            return response
+        except Exception as error:
+            await self._workflow_run_repository.finish_failure(run_id, str(error))
+            raise
+
+    async def _prepare_standalone(self, description: str) -> dict:
+        """Generate a user story from a free-text chat request, with no source ticket.
+
+        Parameters:
+            description: User's free-text description of what they want built.
+
+        Returns:
+            Dict with the generated user story and audit identifiers.
+
+        Edge cases:
+            This method never calls ClickUp, even when credentials are configured.
+        """
+        run_id = await self._workflow_run_repository.start(
+            "prepare_clickup_us", None, {"description": description}
+        )
+        try:
+            user_story = await self._ai_service.text_to_user_story(description)
+            draft_id = await self._ai_draft_repository.save_draft(
+                AiDraftDocument(
+                    fresh_ticket_id="",
+                    type="user_story",
+                    content=user_story.to_markdown(),
+                    structured_content=user_story.model_dump(),
+                    model=self._ai_service.model_name,
+                    prompt_version="chat_user_story_v1",
+                )
+            )
+            response = {
+                "user_story": user_story.model_dump(mode="json"),
+                "draft_id": draft_id,
+                "workflow_run_id": run_id,
+                "requires_approval": True,
+            }
+            await self._workflow_run_repository.finish_success(run_id, response)
+            return response
+        except Exception as error:
+            await self._workflow_run_repository.finish_failure(run_id, str(error))
+            raise
+
+    async def _approve_standalone(self, approved_user_story: UserStory, list_id: str | None = None) -> dict:
+        """Create a standalone ClickUp task after explicit user approval.
+
+        Parameters:
+            approved_user_story: Reviewed user story from the frontend.
+            list_id: Optional ClickUp list ID override. Falls back to settings default.
+
+        Returns:
+            Dict with the created ClickUp task and audit identifiers.
+
+        Edge cases:
+            There is no Freshservice ticket to link or reply to for this flow.
+        """
+        if self._clickup_client is None:
+            raise ValueError("ClickUp client is required for approve_standalone operation")
+
+        run_id = await self._workflow_run_repository.start(
+            "approve_clickup_us", None, {"approved_user_story": approved_user_story.model_dump()}
+        )
+        try:
+            clickup_task = await self._clickup_client.create_task(approved_user_story, list_id=list_id)
+            response = {
+                "user_story": approved_user_story.model_dump(mode="json"),
+                "clickup_task": clickup_task.model_dump(mode="json"),
+                "workflow_run_id": run_id,
+            }
+            await self._workflow_run_repository.finish_success(run_id, response)
             return response
         except Exception as error:
             await self._workflow_run_repository.finish_failure(run_id, str(error))

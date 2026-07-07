@@ -91,6 +91,7 @@ class TimeAgent(BaseAgent):
         self,
         message: str,
         context: AgentContext | None = None,
+        target_date: date | None = None,
     ) -> TimeAgentResult:
         """Process a daily narrative and return one resolution per detected activity.
 
@@ -98,6 +99,10 @@ class TimeAgent(BaseAgent):
             message: Natural language daily narrative in Spanish, possibly describing
                 several activities.
             context: Optional agent context with tools.
+            target_date: Day this narrative is scoped to, if the conversation was
+                started for a specific day (e.g. from a calendar click). When set,
+                activities with no date mentioned default to it instead of being
+                reported as missing, and relative words ("hoy") resolve against it.
 
         Returns:
             TimeAgentResult with one ActivityResolution per detected activity.
@@ -117,7 +122,13 @@ class TimeAgent(BaseAgent):
                 activities=[],
             )
 
-        extracted = await self._narrative_extractor.extract(message, today=date.today())
+        available_clients = await self._get_available_clients(list_id, context)
+        extracted = await self._narrative_extractor.extract(
+            message,
+            today=target_date or date.today(),
+            known_clients=available_clients,
+            assume_today_if_missing=target_date is not None,
+        )
         if not extracted:
             return TimeAgentResult(
                 success=False,
@@ -129,7 +140,8 @@ class TimeAgent(BaseAgent):
             )
 
         resolutions = [
-            await self._resolve_activity(parameters, None, list_id, context) for parameters in extracted
+            await self._resolve_activity(parameters, None, list_id, available_clients, context)
+            for parameters in extracted
         ]
         return self._combine(resolutions, list_id)
 
@@ -151,7 +163,66 @@ class TimeAgent(BaseAgent):
         Returns:
             Resolution for this single activity, without re-running extraction.
         """
-        return await self._resolve_activity(parameters, confirmed_client, list_id, context)
+        available_clients = await self._get_available_clients(list_id, context)
+        return await self._resolve_activity(parameters, confirmed_client, list_id, available_clients, context)
+
+    async def complete_pending_activities(
+        self,
+        pending_activities: list[TimeEntryParameters],
+        message: str,
+        list_id: str,
+        context: AgentContext | None = None,
+        target_date: date | None = None,
+    ) -> TimeAgentResult:
+        """Fill in missing fields on previously-extracted activities from a follow-up reply.
+
+        Unlike `process`, this does not re-segment the accumulated narrative
+        from scratch — it merges the follow-up message into the activities
+        already extracted, preserving fields already known (task, description,
+        client) instead of risking the LLM re-deriving (and potentially
+        dropping) them on every round.
+
+        Parameters:
+            pending_activities: Activities extracted in a previous turn, some fields possibly empty.
+            message: The user's follow-up reply.
+            list_id: Personal ClickUp list ID these activities belong to.
+            context: Optional agent context with tools.
+            target_date: Day this conversation is scoped to, if any — still-missing
+                dates default to it instead of being reported as missing.
+
+        Returns:
+            TimeAgentResult with one ActivityResolution per activity, same order as input.
+        """
+        available_clients = await self._get_available_clients(list_id, context)
+        updated = await self._narrative_extractor.complete(
+            pending_activities,
+            message,
+            today=target_date or date.today(),
+            known_clients=available_clients,
+            assume_today_if_missing=target_date is not None,
+        )
+        resolutions = [
+            await self._resolve_activity(parameters, None, list_id, available_clients, context)
+            for parameters in updated
+        ]
+        return self._combine(resolutions, list_id)
+
+    async def _get_available_clients(self, list_id: str, context: AgentContext | None) -> list[str]:
+        """Fetch the valid client names configured on the personal ClickUp list.
+
+        Parameters:
+            list_id: Personal ClickUp list ID.
+            context: Optional agent context with tools.
+
+        Returns:
+            Client names, or an empty list when the field is missing, free-text,
+            or the tool call fails (callers fall back to free-text client names).
+        """
+        tool = self._get_clickup_time_tool(context)
+        result: ToolResult = await tool.execute(operation="get_clients", list_id=list_id)
+        if not result.success or result.data is None:
+            return []
+        return result.data.get("clients", [])
 
     def _combine(self, resolutions: list[ActivityResolution], list_id: str) -> TimeAgentResult:
         """Combine per-activity resolutions into one overall result and answer."""
@@ -184,6 +255,7 @@ class TimeAgent(BaseAgent):
         parameters: TimeEntryParameters,
         confirmed_client: str | None,
         list_id: str,
+        available_clients: list[str],
         context: AgentContext | None,
     ) -> ActivityResolution:
         """Resolve a single activity: validate completeness, then resolve its client."""
@@ -199,35 +271,29 @@ class TimeAgent(BaseAgent):
                 parameters=parameters,
             )
 
-        clarification = await self._resolve_client(parameters, list_id, context)
+        clarification = self._resolve_client(parameters, available_clients)
         if clarification is not None:
             return ActivityResolution(parameters=parameters, **clarification)
 
         return await self._build_success_result(parameters, list_id, context)
 
-    async def _resolve_client(
+    def _resolve_client(
         self,
         parameters: TimeEntryParameters,
-        list_id: str,
-        context: AgentContext | None,
+        available_clients: list[str],
     ) -> dict[str, Any] | None:
-        """Resolve the client name using the clickup_time tool.
+        """Resolve the client name against the valid clients for this list.
 
-        Client is optional. If the user did not mention a client, no
-        resolution is attempted. If the user mentioned a client and it cannot
-        be matched, a clarification is returned.
+        Client is optional. If the user did not mention a client (or the LLM
+        could not confidently map one from context), no resolution is
+        attempted. If a client was extracted but does not match the valid
+        list closely enough, a clarification is returned.
         """
         requested_client = parameters.client_name.strip()
 
         if not requested_client:
             return None
 
-        tool = self._get_clickup_time_tool(context)
-        result: ToolResult = await tool.execute(operation="get_clients", list_id=list_id)
-        if not result.success or result.data is None:
-            return None
-
-        available_clients = result.data.get("clients", [])
         if not available_clients:
             return None
 

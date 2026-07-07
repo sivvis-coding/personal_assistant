@@ -26,6 +26,7 @@ class ClickUpTool(ToolInterface):
 
     name = "clickup"
     description = "Create, update and read ClickUp tasks."
+    read_operations = ["list_tasks", "get_progress", "read_comments"]
     parameters = [
         ToolParameter(name="operation", type="string", description="One of: create_task, update_task, list_tasks, get_progress, read_comments"),
         ToolParameter(name="ticket_id", type="string", description="Source ticket identifier", required=False),

@@ -17,6 +17,7 @@ from app.assistant.action_executor import AssistantActionExecutor
 from app.agents.time.agent import TimeAgent
 from app.assistant.schemas.actions import AssistantAction, AssistantActionCreate
 from app.assistant.schemas.conversation import (
+    AssistantConversationCreateRequest,
     AssistantConversationCreateResponse,
     AssistantMessageRequest,
     AssistantMessageResponse,
@@ -33,19 +34,25 @@ router = APIRouter(prefix="/assistant", tags=["assistant"], dependencies=[Depend
 
 
 @router.post("/conversations", response_model=AssistantConversationCreateResponse)
-async def create_conversation(service: AssistantConversationService = Depends(get_assistant_conversation_service)) -> AssistantConversationCreateResponse:
+async def create_conversation(
+    request: AssistantConversationCreateRequest | None = None,
+    service: AssistantConversationService = Depends(get_assistant_conversation_service),
+) -> AssistantConversationCreateResponse:
     """Create a new assistant conversation.
 
     Parameters:
+        request: Optional creation input (e.g. a target_date when started from a calendar click).
         service: Assistant conversation service dependency.
 
     Returns:
         Created conversation identifier.
 
     Edge cases:
-        Authentication is enforced by router dependency.
+        Authentication is enforced by router dependency. An empty/absent body creates
+        a conversation not scoped to any particular day, same as before.
     """
-    conversation_id = await service.create_conversation()
+    target_date = request.target_date if request else None
+    conversation_id = await service.create_conversation(target_date)
     return AssistantConversationCreateResponse(conversation_id=conversation_id)
 
 
@@ -253,7 +260,8 @@ async def approve_action(action_id: str, executor: AssistantActionExecutor = Dep
         Updated assistant action.
 
     Edge cases:
-        Prepare actions only generate a second approval action for final ClickUp creation.
+        A single approval executes the action; ClickUp task creation reviews the
+        generated user story on the card and creates the task on that one approval.
     """
     try:
         return await executor.approve(action_id)

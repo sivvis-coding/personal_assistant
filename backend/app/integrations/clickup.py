@@ -1,3 +1,4 @@
+import calendar
 from datetime import date, datetime, timedelta, timezone
 
 import httpx
@@ -14,7 +15,7 @@ from app.integrations.clickup_contract import (
     CLICKUP_USER_STORY_CUSTOM_ITEM_ID,
 )
 from app.schemas.ai import UserStory
-from app.schemas.clickup import ClickUpTask, ClickUpTaskResult, TimeEntry, WeekTimeResponse
+from app.schemas.clickup import ClickUpTask, ClickUpTaskResult, DayTimeSummary, MonthTimeResponse, TimeEntry, WeekTimeResponse
 from app.schemas.ticket import Ticket
 
 
@@ -54,6 +55,39 @@ class ClickUpClient:
         effective_list_id = list_id or self._settings.clickup_list_id
         if not (self._settings.clickup_api_key.strip() and effective_list_id.strip()):
             return ClickUpTaskResult(id=f"mock-clickup-{ticket.id}", url="http://localhost/mock-clickup-task", source="mock")
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                response = await client.post(
+                    f"https://api.clickup.com/api/v2/list/{effective_list_id}/task",
+                    headers={
+                        "accept": "application/json",
+                        "content-type": "application/json",
+                        "Authorization": self._settings.clickup_api_key,
+                    },
+                    json=self._build_user_story_task_payload(user_story),
+                )
+                response.raise_for_status()
+                payload = response.json()
+                return ClickUpTaskResult(id=str(payload.get("id")), url=payload.get("url"), source="clickup")
+        except httpx.HTTPError as error:
+            raise ExternalServiceError(f"ClickUp create task failed: {error}") from error
+
+    async def create_task(self, user_story: UserStory, list_id: str | None = None) -> ClickUpTaskResult:
+        """Create a standalone ClickUp task from a user story, with no source ticket.
+
+        Parameters:
+            user_story: Generated user story.
+            list_id: Target list ID override. Falls back to settings clickup_list_id.
+
+        Returns:
+            ClickUp task result.
+
+        Edge cases:
+            Missing credentials return a mock task instead of calling ClickUp.
+        """
+        effective_list_id = list_id or self._settings.clickup_list_id
+        if not (self._settings.clickup_api_key.strip() and effective_list_id.strip()):
+            return ClickUpTaskResult(id="mock-clickup-standalone", url="http://localhost/mock-clickup-task", source="mock")
         try:
             async with httpx.AsyncClient(timeout=20) as client:
                 response = await client.post(
@@ -183,8 +217,84 @@ class ClickUpClient:
         if not self._settings.has_clickup_credentials:
             entries = [TimeEntry(task_id="mock-task", task_name="Mock support work", hours=2.5, date=today)]
             return WeekTimeResponse(source="mock", week_start=week_start, week_end=week_end, total_hours=2.5, entries=entries)
-        start_ms = int(datetime.combine(week_start, datetime.min.time(), tzinfo=timezone.utc).timestamp() * 1000)
-        end_ms = int(datetime.combine(week_end, datetime.max.time(), tzinfo=timezone.utc).timestamp() * 1000)
+
+        entries = await self._fetch_time_entries(week_start, week_end)
+        return WeekTimeResponse(
+            source="clickup",
+            week_start=week_start,
+            week_end=week_end,
+            total_hours=sum(entry.hours for entry in entries),
+            entries=entries,
+        )
+
+    async def get_month_time_entries(self, year: int, month: int) -> MonthTimeResponse:
+        """Return time entries for a calendar month, one summary per day.
+
+        Parameters:
+            year: Calendar year.
+            month: Calendar month (1-12).
+
+        Returns:
+            Monthly time response with every day of the month represented,
+            including days with no logged time.
+
+        Edge cases:
+            Missing credentials return a small mock so the calendar still renders locally.
+        """
+        days_in_month = calendar.monthrange(year, month)[1]
+        month_start = date(year, month, 1)
+        month_end = date(year, month, days_in_month)
+
+        if not self._settings.has_clickup_credentials:
+            mock_entry = TimeEntry(task_id="mock-task", task_name="Mock support work", hours=2.5, date=month_start)
+            days = [
+                DayTimeSummary(
+                    date=month_start,
+                    total_hours=mock_entry.hours,
+                    entries=[mock_entry],
+                )
+            ] + [
+                DayTimeSummary(date=month_start + timedelta(days=offset), total_hours=0, entries=[])
+                for offset in range(1, days_in_month)
+            ]
+            return MonthTimeResponse(source="mock", year=year, month=month, total_hours=mock_entry.hours, days=days)
+
+        entries = await self._fetch_time_entries(month_start, month_end)
+        entries_by_day: dict[date, list[TimeEntry]] = {}
+        for entry in entries:
+            entries_by_day.setdefault(entry.date, []).append(entry)
+
+        days = [
+            DayTimeSummary(
+                date=month_start + timedelta(days=offset),
+                total_hours=sum(e.hours for e in entries_by_day.get(month_start + timedelta(days=offset), [])),
+                entries=entries_by_day.get(month_start + timedelta(days=offset), []),
+            )
+            for offset in range(days_in_month)
+        ]
+        return MonthTimeResponse(
+            source="clickup",
+            year=year,
+            month=month,
+            total_hours=sum(entry.hours for entry in entries),
+            days=days,
+        )
+
+    async def _fetch_time_entries(self, start: date, end: date) -> list[TimeEntry]:
+        """Fetch and normalize ClickUp time entries within an inclusive date range.
+
+        Parameters:
+            start: First day to include.
+            end: Last day to include.
+
+        Returns:
+            Normalized time entries within the range.
+
+        Edge cases:
+            Assumes ClickUp credentials are already confirmed present by the caller.
+        """
+        start_ms = int(datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc).timestamp() * 1000)
+        end_ms = int(datetime.combine(end, datetime.max.time(), tzinfo=timezone.utc).timestamp() * 1000)
         try:
             async with httpx.AsyncClient(timeout=20) as client:
                 response = await client.get(
@@ -193,14 +303,7 @@ class ClickUpClient:
                     params={"start_date": start_ms, "end_date": end_ms},
                 )
                 response.raise_for_status()
-                entries = self._normalize_time_entries(response.json().get("data", []))
-                return WeekTimeResponse(
-                    source="clickup",
-                    week_start=week_start,
-                    week_end=week_end,
-                    total_hours=sum(entry.hours for entry in entries),
-                    entries=entries,
-                )
+                return self._normalize_time_entries(response.json().get("data", []))
         except httpx.HTTPError as error:
             raise ExternalServiceError(f"ClickUp time entries failed: {error}") from error
 

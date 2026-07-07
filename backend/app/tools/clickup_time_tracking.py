@@ -1,15 +1,27 @@
+import time as time_module
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import httpx
-from langchain.tools import tool
 from typing_extensions import NotRequired, TypedDict
 
 from app.core.config import get_settings
 
 LOCAL_TIMEZONE = ZoneInfo("Europe/Madrid")
 CLICKUP_CLIENT_FIELD_NAMES = ("client", "cliente", "customer")
+
+# In-memory cache of the client custom field per list, so a chat session does not
+# re-fetch it from ClickUp on every message (including speculative, non-time-tracking
+# ones). Short TTL keeps it reasonably fresh if the dropdown options change.
+_CLIENT_FIELD_CACHE_TTL_SECONDS = 300
+_client_field_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
+
+# In-memory cache of the authenticated ClickUp user id per API key, used to
+# self-assign created tasks. A personal token's owner never changes, so a long
+# TTL just guards against a stale cache surviving an API key rotation.
+_AUTHENTICATED_USER_CACHE_TTL_SECONDS = 3600
+_authenticated_user_cache: dict[str, tuple[float, int | None]] = {}
 
 
 class TimeEntryData(TypedDict):
@@ -148,6 +160,43 @@ def _clickup_headers() -> dict[str, str]:
     }
 
 
+def _get_authenticated_user_id() -> int | None:
+    """Return the ClickUp user id that owns the configured API key.
+
+    Used to self-assign tasks created for daily hour imputation, since a
+    personal access token always belongs to exactly one user.
+
+    Parameters:
+        None.
+
+    Returns:
+        The authenticated user's ClickUp id, or None if credentials are
+        missing or the lookup fails.
+
+    Edge cases:
+        Cached per API key for an hour; failures are not cached so a
+        transient error does not block assignment for the rest of the hour.
+    """
+    settings = get_settings()
+    api_key = settings.clickup_api_key
+    if not api_key:
+        return None
+
+    cached = _authenticated_user_cache.get(api_key)
+    if cached is not None and time_module.monotonic() - cached[0] < _AUTHENTICATED_USER_CACHE_TTL_SECONDS:
+        return cached[1]
+
+    try:
+        response = httpx.get("https://api.clickup.com/api/v2/user", headers=_clickup_headers(), timeout=20)
+        response.raise_for_status()
+        user_id = response.json().get("user", {}).get("id")
+    except httpx.HTTPError:
+        return None
+
+    _authenticated_user_cache[api_key] = (time_module.monotonic(), user_id)
+    return user_id
+
+
 def _find_client_field(list_id: str) -> dict[str, Any] | None:
     """Find the ClickUp custom field that represents client/customer.
 
@@ -159,15 +208,21 @@ def _find_client_field(list_id: str) -> dict[str, Any] | None:
 
     Edge cases:
         Field matching is based on normalized field names because IDs are list-specific.
+        Cached per list_id for a few minutes to avoid refetching on every chat message.
     """
+    cached = _client_field_cache.get(list_id)
+    if cached is not None and time_module.monotonic() - cached[0] < _CLIENT_FIELD_CACHE_TTL_SECONDS:
+        return cached[1]
+
     response = httpx.get(f"https://api.clickup.com/api/v2/list/{list_id}/field", headers=_clickup_headers(), timeout=20)
     response.raise_for_status()
     fields = response.json().get("fields", [])
-    for field in fields:
-        field_name = str(field.get("name", "")).strip().lower()
-        if field_name in CLICKUP_CLIENT_FIELD_NAMES:
-            return field
-    return None
+    field = next(
+        (f for f in fields if str(f.get("name", "")).strip().lower() in CLICKUP_CLIENT_FIELD_NAMES),
+        None,
+    )
+    _client_field_cache[list_id] = (time_module.monotonic(), field)
+    return field
 
 
 def _resolve_client_custom_fields(list_id: str, client_name: str) -> list[dict[str, Any]] | None:
@@ -232,6 +287,7 @@ def _create_clickup_task(
     status: str | None,
     start_date_ms: int,
     due_date_ms: int,
+    assignee_id: int | None = None,
 ) -> dict[str, Any]:
     """Create a ClickUp task used as the time tracking container.
 
@@ -243,12 +299,14 @@ def _create_clickup_task(
         status: Optional closed status name.
         start_date_ms: Task start timestamp in milliseconds.
         due_date_ms: Task due timestamp in milliseconds.
+        assignee_id: Optional ClickUp user id to self-assign the task to.
 
     Returns:
         ClickUp task response payload.
 
     Edge cases:
         Status is omitted when no closed status can be resolved.
+        Assignee is omitted when the authenticated user could not be resolved.
     """
     payload: dict[str, Any] = {
         "name": name,
@@ -260,6 +318,8 @@ def _create_clickup_task(
         payload["custom_fields"] = custom_fields
     if status:
         payload["status"] = status
+    if assignee_id is not None:
+        payload["assignees"] = [assignee_id]
 
     response = httpx.post(f"https://api.clickup.com/api/v2/list/{list_id}/task", headers=_clickup_headers(), json=payload, timeout=20)
     response.raise_for_status()
@@ -325,38 +385,6 @@ def get_clickup_client_names(list_id: str) -> list[str]:
     return []
 
 
-@tool
-def prepare_time_entry(time_entry: TimeEntryData) -> str:
-    """Prepare a ClickUp time entry preview without creating external state.
-
-    Parameters:
-        time_entry: Time entry payload requested by the agent/tool caller.
-
-    Returns:
-        Human-readable preview that must be approved before save_time_entry is called.
-
-    Edge cases:
-        Invalid datetime ranges return an error instead of raising to the agent.
-    """
-    try:
-        preview = build_time_entry_preview(time_entry)
-    except ValueError as error:
-        return f"ERROR: {error}"
-
-    hours, minutes = divmod(preview["duration_minutes"], 60)
-    client_line = f"- Cliente: {preview['client_name']}\n" if preview["client_name"] else ""
-    return (
-        "PREVIEW: No se ha creado nada en ClickUp todavía.\n"
-        f"- Tarea: {preview['task_name']}\n"
-        f"- Inicio: {preview['start_datetime']} Europe/Madrid\n"
-        f"- Fin: {preview['end_datetime']} Europe/Madrid\n"
-        f"- Duración: {hours}h {minutes}m\n"
-        f"{client_line}"
-        "Para guardar, pide aprobación explícita al usuario y llama save_time_entry con approved=true."
-    )
-
-
-@tool
 def save_time_entry(time_entry: TimeEntryData, list_id: str) -> str:
     """Create a ClickUp task and register a time entry.
 
@@ -397,6 +425,7 @@ def save_time_entry(time_entry: TimeEntryData, list_id: str) -> str:
 
     try:
         closed_status = _get_closed_status(list_id)
+        assignee_id = _get_authenticated_user_id()
         task = _create_clickup_task(
             list_id=list_id,
             name=time_entry["task_name"],
@@ -405,6 +434,7 @@ def save_time_entry(time_entry: TimeEntryData, list_id: str) -> str:
             status=closed_status,
             start_date_ms=start_ms,
             due_date_ms=end_ms,
+            assignee_id=assignee_id,
         )
     except httpx.HTTPError as error:
         return f"ERROR creating ClickUp task: {error}"

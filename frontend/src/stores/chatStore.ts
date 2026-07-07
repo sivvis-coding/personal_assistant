@@ -27,6 +27,7 @@ export interface ConversationSummary {
 
 interface ChatState {
   conversationId: string | null;
+  targetDate: string | null;
   messages: ChatMessage[];
   pendingActions: AssistantAction[];
   awaitingClientConfirmation: boolean;
@@ -40,6 +41,7 @@ interface ChatState {
 
 interface ChatActions {
   setConversationId: (id: string | null) => void;
+  setTargetDate: (date: string | null) => void;
   addMessage: (message: ChatMessage) => void;
   updateMessage: (id: string, updates: Partial<ChatMessage>) => void;
   appendToMessage: (id: string, text: string) => void;
@@ -69,6 +71,7 @@ interface ChatActions {
  */
 export const useChatStore = create<ChatState & ChatActions>((set) => ({
   conversationId: null,
+  targetDate: null,
   messages: [],
   pendingActions: [],
   awaitingClientConfirmation: false,
@@ -80,6 +83,7 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
   selectedConversationId: null,
 
   setConversationId: (id) => set({ conversationId: id }),
+  setTargetDate: (date) => set({ targetDate: date }),
   addMessage: (message) => set((state) => ({ messages: [...state.messages, message] })),
   updateMessage: (id, updates) =>
     set((state) => ({
@@ -108,6 +112,7 @@ export const useChatStore = create<ChatState & ChatActions>((set) => ({
   resetChat: () => {
     set({
       conversationId: null,
+      targetDate: null,
       messages: [],
       pendingActions: [],
       awaitingClientConfirmation: false,

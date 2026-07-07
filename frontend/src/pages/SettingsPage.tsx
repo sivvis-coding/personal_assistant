@@ -681,37 +681,44 @@ export function SettingsPage() {
                 Lista personal (imputación de horas)
               </Typography>
               <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-                Lista de ClickUp donde el asistente crea tareas y registra horas cuando narras tu día. Es una única lista, distinta de las listas de tickets de arriba.
+                Lista de ClickUp donde el asistente crea tareas y registra horas cuando narras tu día. Si es la
+                función "Lista personal" de ClickUp (Inicio → Mis tareas → Lista personal), no aparece en el árbol
+                de espacios/carpetas de arriba porque vive fuera de esa jerarquía — pega su enlace o ID manualmente:
+                abre la lista en ClickUp, clic derecho → Copiar enlace, y pega el enlace completo aquí tal cual (el
+                sistema extrae el ID automáticamente, incluso si ClickUp te da un ID de vista compuesto como
+                "6-901505357877-1"). Si en cambio es una lista normal (dentro de un espacio), puedes buscarla abajo
+                tras cargar listas.
               </Typography>
+              <TextField
+                label="ID de la lista personal"
+                value={settings.clickup_personal_list_id}
+                onChange={(event) => updateField('clickup_personal_list_id', event.target.value)}
+                fullWidth
+                size="small"
+                sx={{ mb: 1 }}
+              />
+              <TextField
+                label="Nombre (opcional, solo para mostrar en esta pantalla)"
+                value={settings.clickup_personal_list_name}
+                onChange={(event) => updateField('clickup_personal_list_name', event.target.value)}
+                fullWidth
+                size="small"
+                sx={{ mb: 1 }}
+              />
               {clickupDiscovery.options.length > 0 ? (
                 <Autocomplete
                   options={clickupDiscovery.options}
                   getOptionLabel={(option) => option.name}
-                  value={
-                    clickupDiscovery.options.find((list) => list.id === settings.clickup_personal_list_id) ||
-                    (settings.clickup_personal_list_id
-                      ? { id: settings.clickup_personal_list_id, name: settings.clickup_personal_list_name }
-                      : null)
-                  }
+                  value={clickupDiscovery.options.find((list) => list.id === settings.clickup_personal_list_id) || null}
                   onChange={(_, newValue) => {
                     updateField('clickup_personal_list_id', newValue?.id ?? '');
                     updateField('clickup_personal_list_name', newValue?.name ?? '');
                   }}
                   renderInput={(params) => (
-                    <TextField {...params} label="Lista personal" placeholder="Buscar lista…" size="small" />
+                    <TextField {...params} label="O selecciona una lista normal descubierta arriba" placeholder="Buscar lista…" size="small" />
                   )}
-                  sx={{ mb: 1 }}
                 />
-              ) : (
-                <TextField
-                  label="Lista personal seleccionada"
-                  value={settings.clickup_personal_list_name || settings.clickup_personal_list_id}
-                  disabled
-                  fullWidth
-                  size="small"
-                  helperText='Descubre workspaces y carga listas arriba ("Cargar listas") para poder seleccionar una.'
-                />
-              )}
+              ) : null}
             </Box>
           </Box>
         </CardContent>

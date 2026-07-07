@@ -1,10 +1,41 @@
 """Tests for OpenAI LLM provider."""
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
 from app.infrastructure.llm.openai_provider import OpenAILLMProvider
+
+
+class _FakeMessage:
+    def __init__(self, content=None, tool_calls=None) -> None:
+        self.content = content
+        self.tool_calls = tool_calls
+
+
+class _FakeResponse:
+    def __init__(self, message: _FakeMessage) -> None:
+        self.choices = [SimpleNamespace(message=message)]
+
+
+class _FakeCompletions:
+    def __init__(self, responses: list[_FakeResponse]) -> None:
+        self._responses = list(responses)
+        self.calls: list[dict] = []
+
+    async def create(self, **kwargs):  # noqa: ANN003
+        self.calls.append(kwargs)
+        return self._responses.pop(0)
+
+
+class _FakeClient:
+    def __init__(self, responses: list[_FakeResponse]) -> None:
+        self.chat = SimpleNamespace(completions=_FakeCompletions(responses))
+
+
+def _tool_call(call_id: str, name: str, arguments: str):
+    return SimpleNamespace(id=call_id, function=SimpleNamespace(name=name, arguments=arguments))
 
 
 class TestExtractJson:
@@ -65,3 +96,56 @@ class TestExtractJson:
         content = '{"answer": "Hello", missing_quote: "value"}'
         with pytest.raises(json.JSONDecodeError):
             provider._extract_json(content)
+
+
+class TestRunToolLoop:
+    """Tests for the native function-calling loop."""
+
+    @pytest.fixture
+    def provider(self) -> OpenAILLMProvider:
+        from app.core.config import Settings
+
+        return OpenAILLMProvider(Settings(openai_api_key=None))
+
+    @pytest.mark.asyncio
+    async def should_execute_native_tool_then_return_final_json(
+        self, provider: OpenAILLMProvider
+    ) -> None:
+        """A requested tool is dispatched, its result fed back, then JSON is returned."""
+        responses = [
+            _FakeResponse(_FakeMessage(tool_calls=[_tool_call("c1", "freshservice", '{"operation": "list"}')])),
+            _FakeResponse(_FakeMessage(content='{"answer": "listo"}')),
+        ]
+        provider._client = _FakeClient(responses)
+        provider._model = "gpt-test"
+
+        executed: list[tuple[str, dict]] = []
+
+        async def execute_tool(name: str, args: dict) -> dict:
+            executed.append((name, args))
+            return {"tool": name, "success": True, "data": {"count": 2}}
+
+        schemas = [{"type": "function", "function": {"name": "freshservice", "parameters": {}}}]
+        result = await provider.run_tool_loop(
+            prompt="p", schema=None, tool_schemas=schemas, execute_tool=execute_tool
+        )
+
+        assert executed == [("freshservice", {"operation": "list"})]
+        assert result == {"answer": "listo"}
+        calls = provider._client.chat.completions.calls
+        assert "tools" in calls[0]
+        assert calls[1]["response_format"] == {"type": "json_object"}
+        assert any(m.get("role") == "tool" for m in calls[1]["messages"])
+
+    @pytest.mark.asyncio
+    async def should_skip_tool_round_when_no_tools_provided(
+        self, provider: OpenAILLMProvider
+    ) -> None:
+        """With no tool schemas, it goes straight to the structured completion."""
+        provider._client = _FakeClient([_FakeResponse(_FakeMessage(content='{"answer": "hola"}'))])
+        provider._model = "gpt-test"
+
+        result = await provider.run_tool_loop(prompt="p", schema=None)
+
+        assert result == {"answer": "hola"}
+        assert len(provider._client.chat.completions.calls) == 1

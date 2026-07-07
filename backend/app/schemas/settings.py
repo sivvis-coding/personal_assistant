@@ -1,4 +1,35 @@
-from pydantic import BaseModel
+import re
+
+from pydantic import BaseModel, field_validator
+
+# ClickUp's "Copy link" on some views (notably the Home > Personal List feature)
+# yields a composite view id such as "6-901505357877-1" (view type - list id -
+# view sequence), or a full URL ending in that segment — not the plain numeric
+# list id the REST API (/api/v2/list/{list_id}) expects. Requesting that composite
+# value directly returns a 400 Bad Request from ClickUp.
+_CLICKUP_VIEW_ID_SEGMENT = re.compile(r"^\d+-(\d+)-\d+$")
+
+
+def _normalize_clickup_list_id(value: str) -> str:
+    """Extract a plain numeric ClickUp list id from a pasted URL or view id.
+
+    Parameters:
+        value: Raw value pasted by the user (list id, view id, or full URL).
+
+    Returns:
+        The plain list id when a composite view-id pattern is recognized,
+        otherwise the trimmed input unchanged.
+
+    Edge cases:
+        Unrecognized formats are passed through as-is rather than mangled,
+        so a genuinely correct plain list id is never altered.
+    """
+    trimmed = value.strip()
+    if not trimmed:
+        return trimmed
+    segment = trimmed.rstrip("/").split("/")[-1]
+    match = _CLICKUP_VIEW_ID_SEGMENT.match(segment)
+    return match.group(1) if match else trimmed
 
 
 class ClickUpCustomFieldConfig(BaseModel):
@@ -44,6 +75,10 @@ class AppSettings(BaseModel):
         clickup_team_id: ClickUp team ID.
         clickup_lists: Configured ClickUp lists with routing descriptions and field docs.
         clickup_personal_list_id: Dedicated ClickUp list ID used for daily hour imputation tasks.
+            Often ClickUp's own "Personal List" feature (Home > My Tasks > Personal List), which
+            lives outside the Space/Folder hierarchy and therefore cannot be discovered via the
+            team/space/folder list-discovery endpoints — the user must paste its ID manually
+            (ClickUp sidebar > right-click the list > Copy link > take the ID from the URL).
         clickup_personal_list_name: Display name for the personal list, shown in the UI.
         agent_system_prompt: Custom behavioral instructions appended to the base agent prompt.
         openai_api_key: OpenAI API key.
@@ -74,6 +109,12 @@ class AppSettings(BaseModel):
     openai_model: str = "gpt-5.4"
 
     model_config = {"extra": "ignore"}
+
+    @field_validator("clickup_personal_list_id")
+    @classmethod
+    def _validate_clickup_personal_list_id(cls, value: str) -> str:
+        """Normalize a pasted ClickUp view id/URL into a plain list id."""
+        return _normalize_clickup_list_id(value)
 
 
 class ClickUpFieldInput(BaseModel):

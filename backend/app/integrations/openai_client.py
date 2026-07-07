@@ -103,12 +103,44 @@ class OpenAIClient:
             )
         return await self._json_completion("ticket_user_story_v1.txt", ticket, UserStory)
 
-    async def _json_completion(self, prompt_file: str, ticket: Ticket, schema: type[PromptModel]) -> PromptModel:
+    async def text_to_user_story(self, description: str) -> UserStory:
+        """Convert a free-text chat request into a user story, with no source ticket.
+
+        Parameters:
+            description: User's free-text description of what they want built.
+
+        Returns:
+            Validated user story.
+
+        Edge cases:
+            Missing OpenAI credentials return a conservative mock story that
+            just echoes the description back so local development still works.
+        """
+        if self._client is None:
+            return UserStory(
+                title=description[:80],
+                description=description,
+                acceptance_criteria_in_gerkin=(
+                    "Given the request described by the user\n"
+                    "When the described behavior is implemented\n"
+                    "Then it matches what was requested"
+                ),
+                constraints="Mock AI output because OPENAI_API_KEY is not configured",
+                user_story_statement=f"As a user, I want {description.lower()}",
+                out_of_scope="Not specified",
+                requested_by="Not specified",
+                functional_description=description,
+            )
+        return await self._json_completion("chat_user_story_v1.txt", {"description": description}, UserStory)
+
+    async def _json_completion(
+        self, prompt_file: str, context: Ticket | dict, schema: type[PromptModel]
+    ) -> PromptModel:
         """Run an OpenAI JSON completion and validate the result.
 
         Parameters:
             prompt_file: Versioned prompt file name.
-            ticket: Ticket context.
+            context: Ticket or plain dict context serialized as the user message.
             schema: Pydantic schema used for validation.
 
         Returns:
@@ -120,13 +152,14 @@ class OpenAIClient:
         if self._client is None:
             raise ExternalServiceError("OpenAI client is not configured")
         prompt = self._load_prompt(prompt_file)
+        context_payload = context.model_dump() if isinstance(context, BaseModel) else context
         try:
             response = await self._client.chat.completions.create(
                 model=self.model,
                 response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": prompt},
-                    {"role": "user", "content": json.dumps(ticket.model_dump(), default=str)},
+                    {"role": "user", "content": json.dumps(context_payload, default=str)},
                 ],
             )
             content = response.choices[0].message.content or "{}"

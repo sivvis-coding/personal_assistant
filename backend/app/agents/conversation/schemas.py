@@ -8,32 +8,15 @@ from app.assistant.schemas.actions import AssistantActionCreate
 from app.assistant.schemas.recommendations import PrioritizedWorkPlan, TicketRecommendation
 
 
-class ToolCall(BaseModel):
-    """Represent a tool call requested by the conversation agent.
-
-    Parameters:
-        tool: Name of the tool to execute.
-        operation: Operation to perform on the tool.
-        parameters: Additional operation-specific parameters.
-
-    Returns:
-        Validated tool call.
-
-    Edge cases:
-        Unknown tools or operations will fail during execution.
-    """
-
-    tool: str
-    operation: str
-    parameters: dict[str, Any] = Field(default_factory=dict)
-
-
 class ConversationResponse(BaseModel):
     """Structured response from the conversation agent.
 
+    Tool calls are handled natively by the LLM provider (function-calling), so
+    they are not part of this schema; this is the final answer emitted after any
+    tool results have been consumed.
+
     Parameters:
         answer: Human-readable assistant answer in Spanish.
-        tool_calls: Optional list of tools to execute before answering.
         recommendations: Optional ticket recommendations displayed to the user.
         work_plan: Optional prioritized work plan.
         proposed_actions: Pending actions proposed for human approval.
@@ -45,14 +28,13 @@ class ConversationResponse(BaseModel):
         Validated conversation response.
 
     Edge cases:
-        When needs_clarification is True, proposed_actions and tool_calls should be empty.
+        When needs_clarification is True, proposed_actions should be empty.
         memory_updates entries without a "key" field are silently ignored.
         Non-dict recommendations (e.g. plain strings from the LLM) are silently dropped.
         work_plan dicts missing required fields are coerced to None instead of raising.
     """
 
     answer: str
-    tool_calls: list[ToolCall] = Field(default_factory=list)
     recommendations: list[TicketRecommendation] = Field(default_factory=list)
     work_plan: PrioritizedWorkPlan | None = None
     proposed_actions: list[AssistantActionCreate] = Field(default_factory=list)

@@ -37,6 +37,7 @@ export function Header() {
     '/actions': 'Acciones pendientes',
     '/tickets': 'Tickets',
     '/assistant/history': 'Historial de conversaciones',
+    '/time-calendar': 'Calendario de horas',
   };
 
   const title = Object.entries(pageTitles).find(([path]) => location.pathname === path || location.pathname.startsWith(`${path}/`))?.[1] ?? 'Local Assistant';

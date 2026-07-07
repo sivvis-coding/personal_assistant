@@ -1,5 +1,5 @@
 from app.integrations.clickup import ClickUpClient
-from app.schemas.clickup import ClickUpTask, WeekTimeResponse
+from app.schemas.clickup import ClickUpTask, MonthTimeResponse, WeekTimeResponse
 
 
 class ClickUpService:
@@ -45,3 +45,18 @@ class ClickUpService:
             Mock data is returned when ClickUp credentials are missing.
         """
         return await self._clickup_client.get_week_time_entries()
+
+    async def get_month_time_entries(self, year: int, month: int) -> MonthTimeResponse:
+        """Return a calendar month's time entries, one summary per day.
+
+        Parameters:
+            year: Calendar year.
+            month: Calendar month (1-12).
+
+        Returns:
+            Monthly time report suitable for a calendar view.
+
+        Edge cases:
+            Mock data is returned when ClickUp credentials are missing.
+        """
+        return await self._clickup_client.get_month_time_entries(year, month)

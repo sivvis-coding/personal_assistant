@@ -29,6 +29,7 @@ class FreshserviceTool(ToolInterface):
 
     name = "freshservice"
     description = "Read and update Freshservice tickets."
+    read_operations = ["list", "get", "conversations", "search"]
     parameters = [
         ToolParameter(name="operation", type="string", description="One of: list, get, conversations, update, reply, search"),
         ToolParameter(name="ticket_id", type="string", description="Freshservice ticket identifier", required=False),

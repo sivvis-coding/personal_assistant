@@ -40,24 +40,112 @@ class DailyNarrativeExtractor:
     def __init__(self, llm_provider: LLMProvider) -> None:
         self._llm_provider = llm_provider
 
-    async def extract(self, message: str, today: date) -> list[TimeEntryParameters]:
+    async def extract(
+        self,
+        message: str,
+        today: date,
+        known_clients: list[str] | None = None,
+        assume_today_if_missing: bool = False,
+    ) -> list[TimeEntryParameters]:
         """Extract time entry parameters for each activity mentioned in the message.
 
         Parameters:
             message: Natural language daily narrative in Spanish.
             today: Reference date used to resolve relative date words such as "hoy".
+            known_clients: Valid client names configured in ClickUp for the target list,
+                so the model can infer a client from department/project context rather
+                than requiring an explicit "cliente X" phrase.
+            assume_today_if_missing: When True (the conversation is scoped to a
+                specific day, e.g. started from a calendar click), default an
+                activity's date to `today` instead of leaving it null when no
+                date is mentioned at all.
 
         Returns:
             List of extracted parameters, one per detected activity, in the order mentioned.
         """
         prompt = _load_prompt("daily_narrative_v1.txt")
-        context = {"message": message, "today": today.isoformat()}
+        context = {
+            "message": message,
+            "today": today.isoformat(),
+            "known_clients": known_clients or [],
+            "assume_today_if_missing": assume_today_if_missing,
+        }
         data = await self._llm_provider.complete_structured(
             prompt=prompt,
             context=context,
             schema=DailyNarrativeExtraction,
         )
         extraction = DailyNarrativeExtraction.model_validate(data)
+        return [
+            TimeEntryParameters(
+                task_name=activity.task_name,
+                client_name=activity.client_name,
+                description=activity.description,
+                duration_minutes=activity.duration_minutes,
+                start_date=activity.start_date,
+                start_time=activity.start_time,
+            )
+            for activity in extraction.activities
+        ]
+
+    async def complete(
+        self,
+        pending_activities: list[TimeEntryParameters],
+        message: str,
+        today: date,
+        known_clients: list[str] | None = None,
+        assume_today_if_missing: bool = False,
+    ) -> list[TimeEntryParameters]:
+        """Fill in missing fields on already-extracted activities from a follow-up reply.
+
+        Unlike `extract`, this does not re-segment free text from scratch — it
+        takes the activities already known (task/description/client, if any)
+        and asks the model to fill only the gaps (duration/date/time, and
+        client if still empty) from the new message, explicitly preserving
+        whatever was already correctly extracted. This avoids the model
+        "forgetting" a correctly inferred client on a later completion round.
+
+        Parameters:
+            pending_activities: Activities extracted so far, some fields possibly empty.
+            message: The user's follow-up reply providing missing details.
+            today: Reference date used to resolve relative date words such as "hoy".
+            known_clients: Valid client names, used only for activities still missing one.
+            assume_today_if_missing: When True (the conversation is scoped to a
+                specific day), default a still-missing date to `today` instead of
+                leaving it null.
+
+        Returns:
+            The same activities, in the same order, with gaps filled where the
+            message provided enough information.
+        """
+        prompt = _load_prompt("activity_completion_v1.txt")
+        context = {
+            "pending_activities": [
+                {
+                    "task_name": activity.task_name,
+                    "client_name": activity.client_name,
+                    "description": activity.description,
+                    "duration_minutes": activity.duration_minutes,
+                    "start_date": activity.start_date.isoformat() if activity.start_date else None,
+                    "start_time": activity.start_time.isoformat(timespec="minutes") if activity.start_time else None,
+                }
+                for activity in pending_activities
+            ],
+            "message": message,
+            "today": today.isoformat(),
+            "known_clients": known_clients or [],
+            "assume_today_if_missing": assume_today_if_missing,
+        }
+        data = await self._llm_provider.complete_structured(
+            prompt=prompt,
+            context=context,
+            schema=DailyNarrativeExtraction,
+        )
+        extraction = DailyNarrativeExtraction.model_validate(data)
+        if len(extraction.activities) != len(pending_activities):
+            # The model did not respect the "same count/order" instruction — safer to
+            # keep the original activities unchanged than to silently misalign them.
+            return pending_activities
         return [
             TimeEntryParameters(
                 task_name=activity.task_name,

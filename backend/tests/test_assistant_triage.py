@@ -112,7 +112,7 @@ def test_should_reject_execution_when_action_is_not_proposed() -> None:
     policy = AssistantSafetyPolicy()
     action = AssistantAction(
         id="action-1",
-        action_type="prepare_clickup_task",
+        action_type="send_ticket_to_backlog",
         status="completed",
         title="Prepare task",
         description="Already done",
@@ -120,5 +120,5 @@ def test_should_reject_execution_when_action_is_not_proposed() -> None:
         requires_approval=True,
     )
 
-    with pytest.raises(ValueError, match="Only proposed actions"):
+    with pytest.raises(ValueError, match="Only proposed or failed actions"):
         policy.ensure_can_execute(action)

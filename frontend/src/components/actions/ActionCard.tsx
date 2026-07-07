@@ -3,6 +3,7 @@ import {
   Accordion,
   AccordionDetails,
   AccordionSummary,
+  Autocomplete,
   Box,
   Button,
   Card,
@@ -19,13 +20,13 @@ import CheckIcon from '@mui/icons-material/Check';
 import CloseIcon from '@mui/icons-material/Close';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import { approveAssistantAction, rejectAssistantAction, updateAssistantActionPayload } from '../../api/assistant';
+import { getPersonalListClients } from '../../api/clickup';
 import { getTicket, getTicketConversations } from '../../api/tickets';
 import type { AssistantAction } from '../../types/assistant';
 import type { Ticket, TicketConversation, TicketDetailResponse } from '../../types/ticket';
 
 export const ACTION_TYPE_LABELS: Record<string, string> = {
-  prepare_clickup_task: 'Preparar tarea ClickUp',
-  approve_clickup_task: 'Crear tarea ClickUp',
+  prepare_clickup_us: 'Crear US ClickUp',
   save_time_entry: 'Imputar tiempo',
   reply_freshservice_ticket: 'Responder ticket',
   resolve_freshservice_ticket: 'Resolver ticket',
@@ -193,11 +194,73 @@ function TicketContextPanel({ ticketId }: { ticketId: string }) {
 
 // ─── payload editors ─────────────────────────────────────────────────────────
 
+function ClientField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [options, setOptions] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    getPersonalListClients()
+      .then((response) => {
+        if (!cancelled) setOptions(response.clients);
+      })
+      .catch(() => null)
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // No fixed options configured (or still loading/failed): fall back to plain
+  // free text instead of an empty, useless dropdown.
+  if (!loading && options.length === 0) {
+    return (
+      <TextField
+        label="Cliente"
+        size="small"
+        fullWidth
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    );
+  }
+
+  return (
+    <Autocomplete
+      freeSolo
+      size="small"
+      loading={loading}
+      options={options}
+      value={value}
+      onChange={(_, newValue) => onChange(newValue ?? '')}
+      onInputChange={(_, newValue) => onChange(newValue)}
+      renderInput={(params) => (
+        <TextField
+          {...params}
+          label="Cliente"
+          helperText="Selecciona de la lista de ClickUp o escribe para buscar"
+          InputProps={{
+            ...params.InputProps,
+            endAdornment: (
+              <>
+                {loading ? <CircularProgress size={16} /> : null}
+                {params.InputProps.endAdornment}
+              </>
+            ),
+          }}
+        />
+      )}
+    />
+  );
+}
+
 function TimeEntryFields({ payload, onChange }: { payload: Record<string, unknown>; onChange: (k: string, v: string) => void }) {
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
       <TextField label="Tarea" size="small" fullWidth value={String(payload.task_name ?? '')} onChange={(e) => onChange('task_name', e.target.value)} />
-      <TextField label="Cliente" size="small" fullWidth value={String(payload.client_name ?? '')} onChange={(e) => onChange('client_name', e.target.value)} />
+      <ClientField value={String(payload.client_name ?? '')} onChange={(v) => onChange('client_name', v)} />
       <Box sx={{ display: 'flex', gap: 1 }}>
         <TextField label="Inicio" size="small" fullWidth value={String(payload.start_datetime ?? '')} onChange={(e) => onChange('start_datetime', e.target.value)} helperText="YYYY-MM-DDTHH:MM" />
         <TextField label="Fin" size="small" fullWidth value={String(payload.end_datetime ?? '')} onChange={(e) => onChange('end_datetime', e.target.value)} helperText="YYYY-MM-DDTHH:MM" />
@@ -279,9 +342,14 @@ function ActionPayloadEditor({ action, payload, onFieldChange }: {
     return <ReplyFields payload={payload} helperText={helperText} onChange={(k, v) => onFieldChange(k, v)} />;
   }
   if (action.action_type === 'send_ticket_to_backlog') {
-    return <ReplyFields payload={payload} helperText="Mensaje al cliente. El enlace a ClickUp se añadirá al final al crear la tarea." onChange={(k, v) => onFieldChange(k, v)} />;
+    return (
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <UserStoryEditor payload={payload} onChange={(k, v) => onFieldChange(k, v)} />
+        <ReplyFields payload={payload} helperText="Mensaje al cliente. El enlace a ClickUp se añadirá al final al crear la tarea." onChange={(k, v) => onFieldChange(k, v)} />
+      </Box>
+    );
   }
-  if (action.action_type === 'approve_clickup_task') {
+  if (action.action_type === 'prepare_clickup_us') {
     return <UserStoryEditor payload={payload} onChange={(k, v) => onFieldChange(k, v)} />;
   }
   if (action.action_type === 'link_existing_clickup_task') {
@@ -296,8 +364,6 @@ const TICKET_CONTEXT_TYPES = new Set([
   'reply_freshservice_ticket',
   'request_info_freshservice_ticket',
   'send_ticket_to_backlog',
-  'prepare_clickup_task',
-  'approve_clickup_task',
   'resolve_freshservice_ticket',
   'link_existing_clickup_task',
 ]);
@@ -316,6 +382,10 @@ export function ActionCard({ action: initialAction, onDone }: ActionCardProps) {
   const effectivePayload = editedPayload ?? action.payload;
   const hasEdits = editedPayload !== null;
   const isPending = action.status === 'proposed';
+  const isFailed = action.status === 'failed';
+  // Failed actions are actionable too: nothing succeeded on the failed attempt
+  // (the backend allows re-approving them), so the user can fix the payload and retry.
+  const canAct = isPending || isFailed;
 
   function handleFieldChange(key: string, value: unknown) {
     setEditedPayload((prev) => ({ ...(prev ?? action.payload), [key]: value }));
@@ -368,11 +438,11 @@ export function ActionCard({ action: initialAction, onDone }: ActionCardProps) {
           </Box>
         </Box>
 
-        <Typography variant="body2" color="text.secondary" sx={{ mb: showTicketContext || isPending ? 2 : 0 }}>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: showTicketContext || canAct ? 2 : 0 }}>
           {action.description}
         </Typography>
 
-        {isPending ? (
+        {canAct ? (
           <>
             {showTicketContext ? <TicketContextPanel ticketId={action.ticket_id!} /> : null}
             <Divider sx={{ mb: 2 }} />
@@ -382,13 +452,7 @@ export function ActionCard({ action: initialAction, onDone }: ActionCardProps) {
 
         {action.status === 'completed' && action.result ? (
           <Box sx={{ mt: 1, p: 1, bgcolor: 'success.50', borderRadius: 1, border: '1px solid', borderColor: 'success.200' }}>
-            {action.action_type === 'send_ticket_to_backlog' && action.result.next_action_id ? (
-              <Typography variant="caption" color="success.main">
-                User story generada. Revisa la siguiente acción para crear la tarea en ClickUp.
-              </Typography>
-            ) : (
-              <Typography variant="caption" color="success.main">Completado</Typography>
-            )}
+            <Typography variant="caption" color="success.main">Completado</Typography>
           </Box>
         ) : null}
 
@@ -403,15 +467,15 @@ export function ActionCard({ action: initialAction, onDone }: ActionCardProps) {
         {errorMsg ? <Typography color="error" variant="caption" sx={{ display: 'block', mt: 1 }}>{errorMsg}</Typography> : null}
       </CardContent>
 
-      {isPending ? (
+      {canAct ? (
         <CardActions sx={{ justifyContent: 'flex-end', gap: 1, pt: 0 }}>
           <Button size="small" color="error" startIcon={<CloseIcon />} disabled={busy} onClick={() => void handleReject()}>
             Rechazar
           </Button>
-          <Button size="small" color="success" variant={hasEdits ? 'contained' : 'outlined'}
+          <Button size="small" color="success" variant={hasEdits || isFailed ? 'contained' : 'outlined'}
             startIcon={busy ? <CircularProgress size={14} /> : <CheckIcon />}
             disabled={busy} onClick={() => void handleApprove()}>
-            {hasEdits ? 'Guardar y aprobar' : 'Aprobar'}
+            {isFailed ? 'Reintentar' : hasEdits ? 'Guardar y aprobar' : 'Aprobar'}
           </Button>
         </CardActions>
       ) : null}

@@ -62,7 +62,13 @@ class FakeNarrativeExtractor:
     def __init__(self, activities: list[TimeEntryParameters]) -> None:
         self._activities = activities
 
-    async def extract(self, message: str, today: date) -> list[TimeEntryParameters]:
+    async def extract(
+        self,
+        message: str,
+        today: date,
+        known_clients: list[str] | None = None,
+        assume_today_if_missing: bool = False,
+    ) -> list[TimeEntryParameters]:
         return self._activities
 
 

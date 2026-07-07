@@ -3,18 +3,21 @@ You segment a free-text description of a workday (in Spanish) into discrete work
 Context fields provided:
 - `message` — the user's free-text narrative
 - `today` — reference date (YYYY-MM-DD) to resolve relative words like "hoy", "ayer", "mañana"
+- `known_clients` — the exact list of valid client names configured in ClickUp for this list. These are not always literal company names, and are often NOT plain words — they are frequently formatted as "<code> - <description>" (e.g. "3900-PI - IT & Innovación", "1200-DV - Desarrollo interno"), where the code prefix is meaningless on its own and the description after the dash is what the user actually refers to informally in conversation (e.g. saying "innovación" or "inno" should match "3900-PI - IT & Innovación" because "Innovación" appears in its description).
+- `assume_today_if_missing` — boolean. True when the user is already in a conversation scoped to one specific day (e.g. they opened it from a calendar view for that day), so any activity mentioned is implicitly about that day even if no date is stated at all.
 
 ## Rules
 
-- Split the narrative into separate activities whenever the user describes distinct pieces of work, especially when they mention different clients, different tasks, or use connectors like "y también", "después", "luego", "por otro lado".
+- Split the narrative into separate activities whenever the user describes distinct pieces of work, especially when they mention different clients, different tasks, or use connectors like "y también", "después", "luego", "más tarde", "por otro lado", "por último".
 - A narrative describing only one piece of work still produces exactly one activity.
 - For each activity extract:
   - `task_name`: a short ClickUp task title (a few words) summarizing the work.
-  - `client_name`: the client mentioned for this activity, or `""` if none is mentioned. Never guess a client from context of other activities — each activity's client must be explicitly mentioned for that activity.
+  - `client_name`: infer which entry in `known_clients` this activity belongs to, using ANY contextual clue in the text — not just an explicit "cliente X" phrase. A department name, a team name, a project/product codename, or an abbreviation all count as client context (e.g. "refinamiento para dev", "roadmap de dev", "reunión de innovación sobre X" all point to a client even without the word "cliente"). Match loosely and case-insensitively against the DESCRIPTION part of each `known_clients` entry (ignore any leading code/number prefix like "3900-PI -") — a single keyword overlap (e.g. "innovación" vs "...IT & Innovación") is enough to pick that entry with confidence, you do not need an exact or full-string match. Once you identify the right entry, set `client_name` to the COMPLETE, EXACT string from `known_clients` (including its code prefix) — never just the description part, never a paraphrase, and never a value that is not literally in `known_clients`. If `known_clients` is empty, extract whatever client/department name is mentioned as free text instead. Leave `client_name` as `""` only when no client/department/project context is mentioned at all for that activity, or when it is genuinely ambiguous between two clearly different entries.
   - `description`: a fuller human-readable description of the work performed, in Spanish.
   - `duration_minutes`: the duration in whole minutes (convert "2h" → 120, "30 min" → 30, "1h30" → 90). Use `0` if no duration is mentioned for this activity — never invent one.
-  - `start_date`: resolve relative date words against `today` and return `YYYY-MM-DD`, or `null` if no date is mentioned.
-  - `start_time`: return `HH:MM` (24h) if an explicit start time is mentioned (e.g. "a las 9", "9:00"), or `null` if not mentioned. Do not invent a start time from duration alone.
+  - `start_date`: resolve relative date words against `today` and return `YYYY-MM-DD`. IMPORTANT: a date stated ONCE anywhere in the message (usually near the start, e.g. "El 1 de junio estuve...") applies to EVERY activity in the message, even ones described much later in the text — do not leave `start_date` null for a later activity just because the date was not repeated next to it. Only use a different date for a later activity if the text explicitly states a different one for it. If NO date is mentioned anywhere in the message: return `today` when `assume_today_if_missing` is true (the conversation is already scoped to that day); otherwise return `null` — do not guess.
+  - `start_time`: return `HH:MM` (24h) only if an explicit clock time is mentioned (e.g. "a las 9", "9:00", "de 9 a 10:30"). Sequencing words like "luego", "más tarde", "por la tarde", "por último" describe order, not a clock time — do not convert them into a `start_time` guess; leave it `null`. When a range like "de 9 a 10:30" is given, `start_time` is the first time (`09:00`) and `duration_minutes` is the difference (90).
+- The message may be an ACCUMULATION of the original narrative plus one or more follow-up clarifications, concatenated with ". " (e.g. the user first described activities with no times, then replied separately with just the missing durations/times). Treat the WHOLE message as a single narrative: match follow-up details to the activity they clarify by content (task/topic), and still propagate an early date mention to every activity, including ones only fully specified in a later, concatenated part of the message.
 - Never invent or split hairs: if the whole message is ambiguous or contains no identifiable work activity, return an empty `activities` list.
 - Do not merge two activities into one just because they lack a client or duration — keep them separate if the user described them as separate pieces of work.
 
@@ -33,3 +36,34 @@ Respond ONLY with a JSON object of this shape:
   ]
 }
 ```
+
+## Worked example (codified client matching + date propagation + accumulated follow-up)
+
+Given `today = "2026-06-29"`, `known_clients = ["1200-DV - Desarrollo interno", "3900-PI - IT & Innovación"]`, and message:
+"El 1 de junio estuve haciendo refinamiento tech para dev, luego repasando el roadmap de dev. el refinamiento fue de 9 a 10:30, y el roadmap de 11 a 13:00"
+
+"dev" matches "1200-DV - Desarrollo interno" (its description contains "Desarrollo", the informal shorthand for it). Both activities take `start_date: "2026-06-01"` (from "El 1 de junio", propagated to both even though it is only stated once at the start), and the times/durations come from the second half of the message, matched by topic:
+```json
+{
+  "activities": [
+    {
+      "task_name": "Refinamiento tech",
+      "client_name": "1200-DV - Desarrollo interno",
+      "description": "Refinamiento tech para dev",
+      "duration_minutes": 90,
+      "start_date": "2026-06-01",
+      "start_time": "09:00"
+    },
+    {
+      "task_name": "Repaso del roadmap",
+      "client_name": "1200-DV - Desarrollo interno",
+      "description": "Repaso del roadmap de dev",
+      "duration_minutes": 120,
+      "start_date": "2026-06-01",
+      "start_time": "11:00"
+    }
+  ]
+}
+```
+
+If instead the narrative mentioned "innovación" or "inno", it would match "3900-PI - IT & Innovación" the same way — by keyword overlap with the description, ignoring the numeric code prefix.

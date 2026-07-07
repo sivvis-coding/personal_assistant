@@ -25,14 +25,18 @@ class AssistantSafetyPolicy:
             None when the action is safe to execute.
 
         Edge cases:
-            Proposed status is required so completed or rejected actions cannot be replayed.
+            Completed or rejected actions cannot be replayed. Failed actions CAN be
+            retried — the executors only mark an action failed before its primary
+            external write succeeds, so retrying does not normally duplicate it.
+            Known exception: if a save_time_entry ClickUp task was created but the
+            time entry registration failed, retrying creates a second ClickUp task.
         """
-        if action.status != "proposed":
-            raise ValueError("Only proposed actions can be approved or executed.")
+        if action.status not in ("proposed", "failed"):
+            raise ValueError("Only proposed or failed actions can be approved or executed.")
         if action.requires_approval is not True:
             raise ValueError("Assistant actions must require approval.")
-        if action.action_type in ("prepare_clickup_task", "approve_clickup_task") and not action.ticket_id:
-            raise ValueError("Ticket actions require a ticket_id.")
+        if action.action_type == "prepare_clickup_us":
+            self._ensure_prepare_clickup_us_payload(action.payload)
         if action.action_type == "save_time_entry":
             self._ensure_save_time_entry_payload(action.payload)
         if action.action_type == "reply_freshservice_ticket":
@@ -72,6 +76,28 @@ class AssistantSafetyPolicy:
         body = payload.get("body")
         if not body or not str(body).strip():
             raise ValueError("request_info_freshservice_ticket payload requires a non-empty 'body'.")
+
+    def _ensure_prepare_clickup_us_payload(self, payload: dict) -> None:
+        """Validate the payload for a prepare_clickup_us action.
+
+        Parameters:
+            payload: Action-specific payload.
+
+        Returns:
+            None when the payload is valid.
+
+        Edge cases:
+            The user story is generated at propose time and stored in
+            'user_story'; a 'description' is the fallback source used to
+            (re)generate it at execution. At least one must be present, or the
+            generated task would be meaningless.
+        """
+        description = payload.get("description")
+        user_story = payload.get("user_story")
+        has_description = bool(description and str(description).strip())
+        has_user_story = isinstance(user_story, dict) and bool(user_story)
+        if not has_description and not has_user_story:
+            raise ValueError("prepare_clickup_us payload requires a 'description' or a 'user_story'.")
 
     def _ensure_save_time_entry_payload(self, payload: dict) -> None:
         """Validate the payload for a save_time_entry action.

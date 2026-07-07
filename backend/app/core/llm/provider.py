@@ -5,8 +5,10 @@ a simple async interface that agents can call without knowing implementation det
 """
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
+
+ToolExecutor = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
 class LLMProvider(ABC):
@@ -59,20 +61,44 @@ class LLMProvider(ABC):
             Missing credentials should return mock output compatible with the schema.
         """
 
-    async def stream_structured_answer(
+    async def run_tool_loop(
         self,
         prompt: str,
         context: dict[str, Any] | None = None,
         schema: type[Any] | None = None,
-    ) -> AsyncIterator[dict[str, Any]]:
-        """Stream the 'answer' field of a structured completion as token events.
+        tool_schemas: list[dict[str, Any]] | None = None,
+        execute_tool: ToolExecutor | None = None,
+        max_iterations: int = 4,
+    ) -> dict[str, Any]:
+        """Run a native tool-calling loop, then return the final structured response.
 
-        Yields dicts with type 'token' (text chunk) then 'done' (full parsed data)
-        or 'error' (message) on failure.
+        The model may call any of ``tool_schemas`` (executed via ``execute_tool``)
+        for up to ``max_iterations`` rounds before producing the final answer,
+        which is validated against ``schema``.
 
-        Default implementation is non-streaming. Override for real token streaming.
+        Default implementation has no native tool-calling: it ignores the tools
+        and performs a single structured completion. Providers that support
+        function-calling override this.
         """
-        data = await self.complete_structured(prompt, context, schema)
+        return await self.complete_structured(prompt, context, schema)
+
+    async def stream_tool_loop(
+        self,
+        prompt: str,
+        context: dict[str, Any] | None = None,
+        schema: type[Any] | None = None,
+        tool_schemas: list[dict[str, Any]] | None = None,
+        execute_tool: ToolExecutor | None = None,
+        max_iterations: int = 4,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Like run_tool_loop, but streams the final answer as token events.
+
+        Default implementation resolves tools non-streaming, then emits the
+        answer as a single token event followed by 'done'.
+        """
+        data = await self.run_tool_loop(
+            prompt, context, schema, tool_schemas, execute_tool, max_iterations
+        )
         answer = data.get("answer", "") if isinstance(data, dict) else ""
         if answer:
             yield {"type": "token", "text": answer}

@@ -12,6 +12,7 @@ import { TicketsPage } from './pages/TicketsPage';
 import { TicketDetailPage } from './pages/TicketDetailPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { LinkedTasksPage } from './pages/LinkedTasksPage';
+import { TimeCalendarPage } from './pages/TimeCalendarPage';
 
 /**
  * Render root application with routing and MUI theme.
@@ -37,6 +38,7 @@ export function App() {
             <Route path="/tickets" element={<TicketsPage />} />
             <Route path="/tickets/:id" element={<TicketDetailPage />} />
             <Route path="/linked-tasks" element={<LinkedTasksPage />} />
+            <Route path="/time-calendar" element={<TimeCalendarPage />} />
             <Route path="/settings" element={<SettingsPage />} />
           </Routes>
         </AppShell>

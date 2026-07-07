@@ -1,5 +1,6 @@
 """OpenAI-backed LLM provider implementation."""
 
+import asyncio
 import json
 import re
 from collections.abc import AsyncIterator
@@ -10,7 +11,7 @@ from pydantic import ValidationError
 
 from app.core.config import Settings
 from app.core.errors import ExternalServiceError
-from app.core.llm.provider import LLMProvider
+from app.core.llm.provider import LLMProvider, ToolExecutor
 
 
 class _AnswerExtractor:
@@ -133,13 +134,45 @@ class OpenAILLMProvider(LLMProvider):
         except (OpenAIError, json.JSONDecodeError, ValidationError) as error:
             raise ExternalServiceError(f"OpenAI structured completion failed: {error}") from error
 
-    async def stream_structured_answer(
+    async def run_tool_loop(
         self,
         prompt: str,
         context: dict[str, Any] | None = None,
         schema: type[Any] | None = None,
+        tool_schemas: list[dict[str, Any]] | None = None,
+        execute_tool: ToolExecutor | None = None,
+        max_iterations: int = 4,
+    ) -> dict[str, Any]:
+        """Resolve any native tool calls, then return the final structured response."""
+        if self._client is None:
+            return self._mock_structured_response(prompt, context, schema)
+
+        messages = self._build_messages(prompt, context)
+        try:
+            await self._resolve_tool_calls(messages, tool_schemas, execute_tool, max_iterations)
+            response = await self._client.chat.completions.create(
+                model=self._model,
+                response_format={"type": "json_object"},
+                messages=messages,
+            )
+            content = response.choices[0].message.content or "{}"
+            data = self._extract_json(content)
+            if schema is not None:
+                return schema.model_validate(data).model_dump()
+            return data
+        except (OpenAIError, json.JSONDecodeError, ValidationError) as error:
+            raise ExternalServiceError(f"OpenAI tool loop failed: {error}") from error
+
+    async def stream_tool_loop(
+        self,
+        prompt: str,
+        context: dict[str, Any] | None = None,
+        schema: type[Any] | None = None,
+        tool_schemas: list[dict[str, Any]] | None = None,
+        execute_tool: ToolExecutor | None = None,
+        max_iterations: int = 4,
     ) -> AsyncIterator[dict[str, Any]]:
-        """Stream the 'answer' field token by token, then yield the full parsed response."""
+        """Resolve native tool calls non-streaming, then stream the final answer."""
         if self._client is None:
             mock = self._mock_structured_response(prompt, context, schema)
             answer = mock.get("answer", "") if isinstance(mock, dict) else ""
@@ -149,9 +182,14 @@ class OpenAILLMProvider(LLMProvider):
             return
 
         messages = self._build_messages(prompt, context)
+        try:
+            await self._resolve_tool_calls(messages, tool_schemas, execute_tool, max_iterations)
+        except OpenAIError as error:
+            yield {"type": "error", "message": f"OpenAI tool loop failed: {error}"}
+            return
+
         extractor = _AnswerExtractor()
         full_content = ""
-
         try:
             stream = await self._client.chat.completions.create(
                 model=self._model,
@@ -178,6 +216,66 @@ class OpenAILLMProvider(LLMProvider):
             yield {"type": "done", "data": data}
         except (json.JSONDecodeError, ValidationError) as error:
             yield {"type": "error", "message": f"Response parsing failed: {error}"}
+
+    async def _resolve_tool_calls(
+        self,
+        messages: list[dict[str, Any]],
+        tool_schemas: list[dict[str, Any]] | None,
+        execute_tool: ToolExecutor | None,
+        max_iterations: int,
+    ) -> None:
+        """Run native function-calling rounds, appending tool results to messages.
+
+        Loops until the model stops requesting tools or max_iterations is reached.
+        Each requested call is dispatched through execute_tool and its result is
+        appended as a 'tool' message so the model can use it on the next round.
+        """
+        if not tool_schemas or execute_tool is None:
+            return
+
+        for _ in range(max_iterations):
+            response = await self._client.chat.completions.create(
+                model=self._model,
+                messages=messages,
+                tools=tool_schemas,
+                tool_choice="auto",
+            )
+            message = response.choices[0].message
+            if not message.tool_calls:
+                return
+
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": message.content,
+                    "tool_calls": [
+                        {
+                            "id": call.id,
+                            "type": "function",
+                            "function": {"name": call.function.name, "arguments": call.function.arguments},
+                        }
+                        for call in message.tool_calls
+                    ],
+                }
+            )
+            results = await asyncio.gather(
+                *(self._invoke_tool(execute_tool, call) for call in message.tool_calls)
+            )
+            messages.extend(results)
+
+    @staticmethod
+    async def _invoke_tool(execute_tool: ToolExecutor, tool_call: Any) -> dict[str, Any]:
+        """Execute a single tool call and wrap the result as a 'tool' message."""
+        try:
+            arguments = json.loads(tool_call.function.arguments or "{}")
+        except json.JSONDecodeError:
+            arguments = {}
+        result = await execute_tool(tool_call.function.name, arguments)
+        return {
+            "role": "tool",
+            "tool_call_id": tool_call.id,
+            "content": json.dumps(result, default=str, ensure_ascii=False),
+        }
 
     def _extract_json(self, content: str) -> dict[str, Any]:
         """Extract JSON object from potentially malformed content.
@@ -231,9 +329,7 @@ class OpenAILLMProvider(LLMProvider):
         each turn is injected as a real chat message so the model sees the full
         conversation rather than serialised JSON.
         """
-        messages: list[dict[str, str]] = [
-            {"role": "system", "content": "You are a helpful personal assistant."}
-        ]
+        messages: list[dict[str, str]] = [{"role": "system", "content": prompt}]
 
         ctx = dict(context or {})
         history: list[dict[str, Any]] = ctx.pop("message_history", [])
@@ -246,10 +342,12 @@ class OpenAILLMProvider(LLMProvider):
             if assistant_msg:
                 messages.append({"role": "assistant", "content": assistant_msg})
 
-        content = prompt
         if ctx:
-            content += f"\n\nContext: {json.dumps(ctx, default=str, ensure_ascii=False)}"
-        messages.append({"role": "user", "content": content})
+            messages.append(
+                {"role": "user", "content": f"Context: {json.dumps(ctx, default=str, ensure_ascii=False)}"}
+            )
+        elif not history:
+            messages.append({"role": "user", "content": "Proceed."})
 
         return messages
 

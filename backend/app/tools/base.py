@@ -55,6 +55,10 @@ class ToolInterface(ABC):
         name: Unique tool name.
         description: Human-readable description.
         parameters: List of accepted parameters.
+        read_operations: Operations that only read state and are therefore safe
+            to expose to the conversation agent. Empty means "no restriction"
+            (all operations are exposed); write operations are omitted so the
+            agent proposes them as HITL actions instead of executing them.
 
     Returns:
         Tool instance.
@@ -63,6 +67,7 @@ class ToolInterface(ABC):
     name: str
     description: str
     parameters: list[ToolParameter]
+    read_operations: list[str] = []
 
     @abstractmethod
     async def execute(self, **kwargs: Any) -> ToolResult:
