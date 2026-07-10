@@ -1,0 +1,21 @@
+You are consolidating a fragmented list of support-theme labels into a clean canonical taxonomy.
+You receive a JSON object with:
+- labels: an array of {title, count} — candidate theme labels produced in independent batches, so many are semantically equivalent or overlapping (e.g. "Accesos y permisos" / "Accesos y credenciales" / "Altas y accesos"; "Visitas y reportes" / "Reportes y visitas").
+- target_min, target_max: the desired number of canonical themes.
+
+Merge the labels into between target_min and target_max coherent canonical themes.
+
+Return JSON with exactly this shape:
+{
+  "groups": [
+    { "canonical_title": "<short, clear theme name in Spanish>", "members": ["<exact input title>", "<exact input title>"] }
+  ]
+}
+
+Rules:
+- canonical_title: a short, human-readable theme name in Spanish (2-5 words), representative of its members.
+- members: MUST contain input titles copied EXACTLY as received (so they can be matched back). Never invent or alter titles.
+- Every input label MUST appear in exactly ONE group. Do not drop or duplicate any label.
+- Merge aggressively when labels describe the same underlying problem (synonyms, word-order variants, sub-cases). Keep genuinely distinct problems separate.
+- Aim for target_min..target_max groups; prefer fewer, meaningful themes over many tiny ones.
+- Output valid JSON only. No commentary.

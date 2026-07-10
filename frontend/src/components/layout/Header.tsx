@@ -13,34 +13,28 @@ import {
   Typography,
 } from '@mui/material';
 import KeyIcon from '@mui/icons-material/Key';
+import MenuIcon from '@mui/icons-material/Menu';
+import { useUiStore } from '../../stores/uiStore';
+import { DRAWER_WIDTH, RAIL_WIDTH, pageTitleForPath } from './navConfig';
 
 /**
- * Render the application header with page title and contextual actions.
+ * Render the application header.
  *
- * Parameters:
- *   None.
- *
- * Returns:
- *   JSX header component.
+ * The AppBar width/offset are derived from the live sidebar state (rail vs full)
+ * so header and content stay aligned when the rail collapses. On mobile it shows
+ * a hamburger that opens the temporary navigation drawer.
  *
  * Edge cases:
  *   API key is stored only in localStorage for local development convenience.
  */
 export function Header() {
   const location = useLocation();
+  const { collapsed, setMobileOpen } = useUiStore();
   const [keyDialogOpen, setKeyDialogOpen] = useState(false);
   const [localKey, setLocalKey] = useState(window.localStorage.getItem('LOCAL_APP_API_KEY') ?? '');
 
-  const pageTitles: Record<string, string> = {
-    '/': 'Dashboard',
-    '/assistant': 'Agente',
-    '/actions': 'Acciones pendientes',
-    '/tickets': 'Tickets',
-    '/assistant/history': 'Historial de conversaciones',
-    '/time-calendar': 'Calendario de horas',
-  };
-
-  const title = Object.entries(pageTitles).find(([path]) => location.pathname === path || location.pathname.startsWith(`${path}/`))?.[1] ?? 'Local Assistant';
+  const title = pageTitleForPath(location.pathname);
+  const desktopWidth = collapsed ? RAIL_WIDTH : DRAWER_WIDTH;
 
   function saveLocalKey(value: string): void {
     window.localStorage.setItem('LOCAL_APP_API_KEY', value);
@@ -52,15 +46,28 @@ export function Header() {
       <AppBar
         position="fixed"
         sx={{
-          width: { sm: `calc(100% - 240px)` },
-          ml: { sm: '240px' },
+          width: { md: `calc(100% - ${desktopWidth}px)` },
+          ml: { md: `${desktopWidth}px` },
+          transition: (theme) => theme.transitions.create(['width', 'margin'], {
+            easing: theme.transitions.easing.sharp,
+            duration: theme.transitions.duration.enteringScreen,
+          }),
         }}
       >
         <Toolbar>
-          <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
+          <IconButton
+            color="inherit"
+            edge="start"
+            aria-label="Abrir menú"
+            onClick={() => setMobileOpen(true)}
+            sx={{ mr: 2, display: { md: 'none' } }}
+          >
+            <MenuIcon />
+          </IconButton>
+          <Typography variant="h6" component="div" sx={{ flexGrow: 1 }} noWrap>
             {title}
           </Typography>
-          <IconButton color="inherit" onClick={() => setKeyDialogOpen(true)}>
+          <IconButton color="inherit" onClick={() => setKeyDialogOpen(true)} aria-label="API key">
             <KeyIcon />
           </IconButton>
         </Toolbar>

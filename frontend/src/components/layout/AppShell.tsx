@@ -7,29 +7,26 @@ interface AppShellProps {
 }
 
 /**
- * Render the main application shell with sidebar, header and content area.
+ * Render the main application shell: header, responsive sidebar and content area.
  *
- * Parameters:
- *   children: Page content to render inside the shell.
- *
- * Returns:
- *   JSX layout shell.
- *
- * Edge cases:
- *   Content area reserves space for the fixed header.
+ * The sidebar participates in the flex row (permanent on desktop, an overlay on
+ * mobile), so the content area simply grows to fill the remaining space — no
+ * hardcoded widths to keep in sync. The spacer Toolbar reserves room under the
+ * fixed header.
  */
 export function AppShell({ children }: AppShellProps) {
   return (
-    <Box sx={{ display: 'flex' }}>
+    <Box sx={{ display: 'flex', minHeight: '100vh' }}>
       <Header />
       <Sidebar />
       <Box
         component="main"
         sx={{
           flexGrow: 1,
+          minWidth: 0,
           bgcolor: 'background.default',
           minHeight: '100vh',
-          p: 3,
+          p: { xs: 2, md: 3 },
         }}
       >
         <Toolbar />

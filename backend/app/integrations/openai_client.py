@@ -8,6 +8,23 @@ from pydantic import BaseModel, ValidationError
 from app.core.config import Settings
 from app.core.errors import ExternalServiceError
 from app.schemas.ai import ReplyDraft, TicketSummary, UserStory
+from app.schemas.clickup import ClickUpTask
+from app.schemas.insights import (
+    ClusterGroup,
+    ClusterPlan,
+    ConsolidationGroup,
+    ConsolidationPlan,
+    DepartmentAnalysisPlan,
+    ThemeDoc,
+    TicketSignature,
+)
+from app.schemas.roadmap import (
+    RoadmapGroupPlan,
+    RoadmapListSummary,
+    RoadmapPlan,
+    RoadmapSummariesResponse,
+    RoadmapSummaryListInput,
+)
 from app.schemas.ticket import Ticket
 
 PromptModel = TypeVar("PromptModel", bound=BaseModel)
@@ -132,6 +149,212 @@ class OpenAIClient:
                 functional_description=description,
             )
         return await self._json_completion("chat_user_story_v1.txt", {"description": description}, UserStory)
+
+    async def generate_roadmap(self, tasks: list[ClickUpTask]) -> RoadmapPlan:
+        """Group ClickUp tasks into themes/epics for a roadmap.
+
+        Parameters:
+            tasks: Source ClickUp tasks to organize.
+
+        Returns:
+            Raw grouping plan (theme titles + task IDs) for the service to
+            rehydrate against the real tasks.
+
+        Edge cases:
+            Missing OpenAI key returns a single mock group containing every task,
+            so the roadmap page still renders during local development.
+        """
+        if self._client is None:
+            return RoadmapPlan(
+                groups=[
+                    RoadmapGroupPlan(
+                        title="All tasks",
+                        summary="Mock roadmap because OPENAI_API_KEY is not configured",
+                        task_ids=[task.id for task in tasks],
+                    )
+                ]
+            )
+        context = {
+            "tasks": [
+                {
+                    "id": task.id,
+                    "name": task.name,
+                    "status": task.status,
+                    "description": task.description or "",
+                }
+                for task in tasks
+            ]
+        }
+        return await self._json_completion("roadmap_v1.txt", context, RoadmapPlan)
+
+    async def summarize_roadmap_lists(
+        self, lists: list[RoadmapSummaryListInput]
+    ) -> RoadmapSummariesResponse:
+        """Summarize each ClickUp list from its (filtered) visible tasks.
+
+        Parameters:
+            lists: Lists with their currently-visible tasks.
+
+        Returns:
+            One summary per list.
+
+        Edge cases:
+            Missing OpenAI key returns deterministic mock summaries so the local
+            dev flow still renders.
+        """
+        if self._client is None:
+            return RoadmapSummariesResponse(
+                summaries=[
+                    RoadmapListSummary(
+                        list_id=entry.list_id,
+                        summary=f"Resumen mock: {len(entry.tasks)} tareas en {entry.list_name or entry.list_id}.",
+                    )
+                    for entry in lists
+                ]
+            )
+        context = {
+            "lists": [
+                {
+                    "list_id": entry.list_id,
+                    "list_name": entry.list_name,
+                    "tasks": [
+                        {"name": t.name, "status": t.status, "description": t.description or ""}
+                        for t in entry.tasks
+                    ],
+                }
+                for entry in lists
+            ]
+        }
+        return await self._json_completion("roadmap_summary_v1.txt", context, RoadmapSummariesResponse)
+
+    async def summarize_ticket_history(self, context: dict) -> TicketSignature:
+        """Summarize one historic ticket into a compact reusable signature.
+
+        Parameters:
+            context: Ticket context ({ticket_id, subject, description, status,
+                priority, conversations:[{kind, body_text}]}).
+
+        Returns:
+            Validated ticket signature (problem/category/root_cause/resolution).
+
+        Edge cases:
+            Missing OpenAI key returns a deterministic mock signature so the
+            knowledge pipeline runs locally without credentials.
+        """
+        if self._client is None:
+            return TicketSignature(
+                problem=str(context.get("subject") or "Mock problem"),
+                category="general",
+                root_cause="unknown",
+                resolution="unresolved" if context.get("status") not in ("resolved", "closed") else "resolved",
+                product_area="",
+                tags=["mock"],
+            )
+        return await self._json_completion("insights_signature_v1.txt", context, TicketSignature)
+
+    async def cluster_ticket_signatures(self, signatures: list[dict]) -> ClusterPlan:
+        """Group ticket signatures into recurring themes.
+
+        Parameters:
+            signatures: List of {key, problem, category, product_area, tags}.
+
+        Returns:
+            Clustering plan (theme titles + the ticket keys they contain).
+
+        Edge cases:
+            Missing OpenAI key returns a single mock cluster with every key, so
+            the reduce phase still produces output locally.
+        """
+        if self._client is None:
+            return ClusterPlan(
+                clusters=[ClusterGroup(title="All tickets", ticket_keys=[str(s.get("key")) for s in signatures])]
+            )
+        return await self._json_completion("insights_cluster_v1.txt", {"tickets": signatures}, ClusterPlan)
+
+    async def consolidate_themes(self, context: dict) -> ConsolidationPlan:
+        """Merge fragmented candidate cluster titles into a canonical taxonomy.
+
+        Parameters:
+            context: {labels:[{title, count}], target_min, target_max}.
+
+        Returns:
+            Canonical groups, each mapping to the candidate titles it absorbs.
+
+        Edge cases:
+            Missing OpenAI key returns an identity mapping (one canonical per
+            label) so local/offline behavior is unchanged.
+        """
+        if self._client is None:
+            return ConsolidationPlan(
+                groups=[
+                    ConsolidationGroup(canonical_title=str(entry.get("title")), members=[str(entry.get("title"))])
+                    for entry in context.get("labels", [])
+                ]
+            )
+        return await self._json_completion("insights_consolidate_v1.txt", context, ConsolidationPlan)
+
+    async def write_theme_doc(self, context: dict) -> ThemeDoc:
+        """Write a knowledge-base document for one theme cluster.
+
+        Parameters:
+            context: {title, signatures:[{problem, root_cause, resolution, product_area}]}.
+
+        Returns:
+            Validated theme document (summary/symptoms/root_causes/resolution_steps).
+
+        Edge cases:
+            Missing OpenAI key returns a deterministic mock document.
+        """
+        if self._client is None:
+            title = str(context.get("title") or "Tema")
+            n = len(context.get("signatures") or [])
+            return ThemeDoc(
+                title=title,
+                summary=f"Resumen mock del tema '{title}' ({n} tickets).",
+                symptoms="Síntomas mock.",
+                root_causes="Causas mock.",
+                resolution_steps="Pasos de resolución mock.",
+            )
+        return await self._json_completion("insights_theme_v1.txt", context, ThemeDoc)
+
+    async def analyze_department(self, context: dict) -> DepartmentAnalysisPlan:
+        """Identify a department's bottlenecks and automation opportunities.
+
+        Parameters:
+            context: {department, themes:[{title, frequency, summary}],
+                metrics:[{category, volume, avg_resolution_hours, reopen_rate}]}.
+
+        Returns:
+            Bottlenecks + automation opportunities (each tagged with a category
+            so the service can attach ticket references).
+
+        Edge cases:
+            Missing OpenAI key returns a deterministic mock analysis derived from
+            the highest-volume metric so the department view still renders.
+        """
+        if self._client is None:
+            metrics = context.get("metrics") or []
+            top = max(metrics, key=lambda m: m.get("volume", 0), default=None)
+            cat = (top or {}).get("category", "general")
+            return DepartmentAnalysisPlan(
+                bottlenecks=[
+                    {
+                        "title": f"Alto volumen en '{cat}'",
+                        "description": "Análisis mock: categoría con más tickets.",
+                        "severity": "medium",
+                        "category": cat,
+                    }
+                ],
+                automation=[
+                    {
+                        "title": f"Automatizar '{cat}'",
+                        "description": "Análisis mock: patrón repetitivo candidato a automatización.",
+                        "rationale": "Alto volumen recurrente.",
+                        "category": cat,
+                    }
+                ],
+            )
+        return await self._json_completion("insights_department_analysis_v1.txt", context, DepartmentAnalysisPlan)
 
     async def _json_completion(
         self, prompt_file: str, context: Ticket | dict, schema: type[PromptModel]

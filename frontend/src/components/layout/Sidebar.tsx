@@ -1,6 +1,6 @@
-import { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
+  Badge,
   Box,
   Divider,
   Drawer,
@@ -10,125 +10,138 @@ import {
   ListItemIcon,
   ListItemText,
   Toolbar,
+  Tooltip,
   Typography,
-  Badge,
+  useMediaQuery,
+  useTheme,
 } from '@mui/material';
-import DashboardIcon from '@mui/icons-material/Dashboard';
-import ChatIcon from '@mui/icons-material/Chat';
-import AssignmentTurnedInIcon from '@mui/icons-material/AssignmentTurnedIn';
-import ConfirmationNumberIcon from '@mui/icons-material/ConfirmationNumber';
 import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
-import SettingsIcon from '@mui/icons-material/Settings';
-import LinkIcon from '@mui/icons-material/Link';
-import CalendarMonthIcon from '@mui/icons-material/CalendarMonth';
 import { useActionsStore } from '../../stores/actionsStore';
-
-const DRAWER_WIDTH = 240;
-const COLLAPSED_WIDTH = 64;
-
-interface NavItem {
-  label: string;
-  path: string;
-  icon: React.ReactNode;
-  badge?: number;
-}
+import { useUiStore } from '../../stores/uiStore';
+import { DRAWER_WIDTH, NAV_ITEMS, RAIL_WIDTH, isPathActive } from './navConfig';
 
 /**
- * Render the application sidebar with navigation.
+ * Render the primary navigation.
  *
- * Parameters:
- *   None.
- *
- * Returns:
- *   JSX sidebar component.
- *
- * Edge cases:
- *   Sidebar can be collapsed to save horizontal space.
+ * Responsive behaviour:
+ *   - md and up: a permanent drawer that can collapse to an icon rail.
+ *   - below md: a temporary overlay drawer toggled from the header hamburger,
+ *     always shown at full width (never collapsed to a rail on a phone).
  */
 export function Sidebar() {
   const navigate = useNavigate();
   const location = useLocation();
-  const [collapsed, setCollapsed] = useState(false);
+  const theme = useTheme();
+  const isDesktop = useMediaQuery(theme.breakpoints.up('md'));
   const pendingCount = useActionsStore((state) => state.pendingActions.length);
+  const { collapsed, mobileOpen, toggleCollapsed, setMobileOpen } = useUiStore();
 
-  const navItems: NavItem[] = [
-    { label: 'Dashboard', path: '/', icon: <DashboardIcon /> },
-    { label: 'Agente', path: '/assistant', icon: <ChatIcon /> },
-    { label: 'Acciones', path: '/actions', icon: <AssignmentTurnedInIcon />, badge: pendingCount },
-    { label: 'Tickets', path: '/tickets', icon: <ConfirmationNumberIcon /> },
-    { label: 'Tareas', path: '/linked-tasks', icon: <LinkIcon /> },
-    { label: 'Calendario de horas', path: '/time-calendar', icon: <CalendarMonthIcon /> },
-    { label: 'Configuración', path: '/settings', icon: <SettingsIcon /> },
-  ];
+  // On mobile the drawer always shows full labels; only the desktop rail collapses.
+  const showLabels = !isDesktop || !collapsed;
+  const width = isDesktop && collapsed ? RAIL_WIDTH : DRAWER_WIDTH;
 
-  const width = collapsed ? COLLAPSED_WIDTH : DRAWER_WIDTH;
+  function handleNavigate(path: string): void {
+    navigate(path);
+    if (!isDesktop) setMobileOpen(false);
+  }
 
-  return (
-    <Drawer
-      variant="permanent"
-      sx={{
-        width,
-        flexShrink: 0,
-        '& .MuiDrawer-paper': {
-          width,
-          boxSizing: 'border-box',
-          transition: (theme) => theme.transitions.create('width', {
-            easing: theme.transitions.easing.sharp,
-            duration: theme.transitions.duration.enteringScreen,
-          }),
-          overflowX: 'hidden',
-        },
-      }}
-    >
+  const content = (
+    <>
       <Toolbar
         sx={{
           display: 'flex',
           alignItems: 'center',
-          justifyContent: collapsed ? 'center' : 'space-between',
-          px: [1],
+          justifyContent: showLabels ? 'space-between' : 'center',
+          px: [1.5],
         }}
       >
-        {!collapsed ? <Typography variant="h6">Assistant</Typography> : null}
-        <IconButton onClick={() => setCollapsed((value) => !value)} size="small">
-          {collapsed ? <ChevronRightIcon /> : <ChevronLeftIcon />}
-        </IconButton>
+        {showLabels ? <Typography variant="h6" noWrap>Assistant</Typography> : null}
+        {isDesktop ? (
+          <IconButton onClick={toggleCollapsed} size="small" aria-label={collapsed ? 'Expandir menú' : 'Colapsar menú'}>
+            {collapsed ? <ChevronRightIcon /> : <ChevronLeftIcon />}
+          </IconButton>
+        ) : null}
       </Toolbar>
       <Divider />
       <List>
-        {navItems.map((item) => {
-          const selected = location.pathname === item.path || location.pathname.startsWith(`${item.path}/`);
-          return (
+        {NAV_ITEMS.map((item) => {
+          const selected = isPathActive(location.pathname, item.path);
+          const iconEl = item.badge ? (
+            <Badge badgeContent={pendingCount} color="error">
+              <Box sx={{ display: 'flex' }}>{item.icon}</Box>
+            </Badge>
+          ) : (
+            item.icon
+          );
+          const button = (
             <ListItemButton
-              key={item.path}
               selected={selected}
-              onClick={() => navigate(item.path)}
+              onClick={() => handleNavigate(item.path)}
               sx={{
                 minHeight: 48,
-                justifyContent: collapsed ? 'center' : 'initial',
+                justifyContent: showLabels ? 'initial' : 'center',
                 px: 2.5,
+                mx: 1,
+                borderRadius: 1,
               }}
             >
               <ListItemIcon
                 sx={{
                   minWidth: 0,
-                  mr: collapsed ? 'auto' : 3,
+                  mr: showLabels ? 3 : 'auto',
                   justifyContent: 'center',
                 }}
               >
-                {item.badge ? (
-                  <Badge badgeContent={item.badge} color="error">
-                    <Box>{item.icon}</Box>
-                  </Badge>
-                ) : (
-                  item.icon
-                )}
+                {iconEl}
               </ListItemIcon>
-              {!collapsed ? <ListItemText primary={item.label} /> : null}
+              {showLabels ? <ListItemText primary={item.label} /> : null}
             </ListItemButton>
+          );
+          return (
+            <Box component="li" key={item.path} sx={{ listStyle: 'none' }}>
+              {showLabels ? button : <Tooltip title={item.label} placement="right">{button}</Tooltip>}
+            </Box>
           );
         })}
       </List>
+    </>
+  );
+
+  if (isDesktop) {
+    return (
+      <Drawer
+        variant="permanent"
+        sx={{
+          width,
+          flexShrink: 0,
+          '& .MuiDrawer-paper': {
+            width,
+            boxSizing: 'border-box',
+            overflowX: 'hidden',
+            transition: theme.transitions.create('width', {
+              easing: theme.transitions.easing.sharp,
+              duration: theme.transitions.duration.enteringScreen,
+            }),
+          },
+        }}
+      >
+        {content}
+      </Drawer>
+    );
+  }
+
+  return (
+    <Drawer
+      variant="temporary"
+      open={mobileOpen}
+      onClose={() => setMobileOpen(false)}
+      ModalProps={{ keepMounted: true }}
+      sx={{
+        '& .MuiDrawer-paper': { width: DRAWER_WIDTH, boxSizing: 'border-box' },
+      }}
+    >
+      {content}
     </Drawer>
   );
 }

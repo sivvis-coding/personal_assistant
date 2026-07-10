@@ -97,18 +97,26 @@ class ClickUpTask(BaseModel):
         name: Task name.
         status: Task status name.
         url: Task URL.
+        description: Plain-text task description, when available.
+        list_id: ClickUp list the task belongs to, when fetched per list.
+        list_name: Display name of that list, when known.
 
     Returns:
         ClickUp task value object.
 
     Edge cases:
         Missing status is reported as 'unknown'.
+        Missing description is None (not every list endpoint returns it).
+        list_id/list_name are None for single-list (legacy) fetches.
     """
 
     id: str
     name: str
     status: str = "unknown"
     url: str | None = None
+    description: str | None = None
+    list_id: str | None = None
+    list_name: str | None = None
 
 
 class TimeEntry(BaseModel):

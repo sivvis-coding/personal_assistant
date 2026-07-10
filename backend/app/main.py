@@ -5,7 +5,7 @@ from typing import AsyncIterator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import assistant, clickup, discovery, health, links, metrics, settings, sync, tickets, workflow_runs
+from app.api import assistant, clickup, discovery, health, insights, links, metrics, roadmap, settings, sync, tickets, workflow_runs
 from app.core.config import build_settings_from_overrides, get_settings, set_app_settings
 from app.core.di.container import Container, bootstrap
 from app.db.mongo import MongoManager
@@ -13,7 +13,11 @@ from app.repositories.ai_draft_repository import AiDraftRepository
 from app.repositories.app_settings_repository import AppSettingsRepository
 from app.repositories.assistant_action_repository import AssistantActionRepository
 from app.repositories.conversation_repository import ConversationRepository
+from app.repositories.fresh_harvest_state_repository import FreshHarvestStateRepository
+from app.repositories.fresh_knowledge_repository import FreshKnowledgeRepository
+from app.repositories.fresh_ticket_archive_repository import FreshTicketArchiveRepository
 from app.repositories.integration_link_repository import IntegrationLinkRepository
+from app.repositories.operation_lock_repository import OperationLockRepository
 from app.repositories.ticket_cache_repository import TicketCacheRepository
 from app.repositories.workflow_run_repository import WorkflowRunRepository
 
@@ -99,6 +103,10 @@ async def ensure_indexes(mongo_manager: MongoManager) -> None:
     await AppSettingsRepository(database).ensure_indexes()
     await ConversationRepository(database).ensure_indexes()
     await AssistantActionRepository(database).ensure_indexes()
+    await FreshTicketArchiveRepository(database).ensure_indexes()
+    await FreshHarvestStateRepository(database).ensure_indexes()
+    await FreshKnowledgeRepository(database).ensure_indexes()
+    await OperationLockRepository(database).ensure_indexes()
 
 
 app = FastAPI(title="Local Personal Assistant", version="0.1.0", lifespan=lifespan)
@@ -121,3 +129,5 @@ app.include_router(discovery.router)
 app.include_router(sync.router)
 app.include_router(assistant.router)
 app.include_router(links.router)
+app.include_router(roadmap.router)
+app.include_router(insights.router)

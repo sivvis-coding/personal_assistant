@@ -1,0 +1,21 @@
+You are a product manager writing a roadmap overview.
+You receive a JSON object with a "lists" array. Each list has: list_id, list_name and a
+"tasks" array (each task has name, status, description).
+
+For EACH list, write a concise summary (2-4 sentences, plain string, in Spanish) that captures:
+- what the list/backlog is about overall (the common threads and main themes),
+- roughly how much work it covers and any notable status mix (e.g. varias en progreso, muchas por empezar),
+- the main focus or next priorities if they are evident.
+
+Return JSON with exactly this shape:
+{
+  "summaries": [
+    { "list_id": "<exact list_id from the input>", "summary": "<summary>" }
+  ]
+}
+
+Rules:
+- Echo each list's list_id EXACTLY as received so it can be matched back.
+- Return one entry per input list, in the same order.
+- summary must be a single plain string. Do not invent tasks or facts not implied by the input.
+- Output valid JSON only. No commentary.

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Box, CircularProgress, Typography } from '@mui/material';
+import { Box, CircularProgress, Stack, Typography } from '@mui/material';
 import { useActionsStore } from '../stores/actionsStore';
 import { useChatStore } from '../stores/chatStore';
 import { listPendingAssistantActions } from '../api/assistant';
@@ -63,9 +63,11 @@ export function ActionsPage() {
       {pendingActions.length === 0 ? (
         <Typography color="text.secondary">No hay acciones pendientes.</Typography>
       ) : (
-        pendingActions.map((action) => (
-          <ActionCard key={action.id} action={action} onDone={(updated) => void handleDone(updated)} />
-        ))
+        <Stack spacing={1.5} sx={{ maxWidth: 720 }}>
+          {pendingActions.map((action) => (
+            <ActionCard key={action.id} action={action} onDone={(updated) => void handleDone(updated)} />
+          ))}
+        </Stack>
       )}
     </Box>
   );

@@ -21,6 +21,7 @@ from app.integrations.openai_client import OpenAIClient
 from app.repositories.ai_draft_repository import AiDraftRepository
 from app.repositories.assistant_action_repository import AssistantActionRepository
 from app.repositories.integration_link_repository import IntegrationLinkRepository
+from app.repositories.roadmap_repository import RoadmapRepository
 from app.repositories.ticket_cache_repository import TicketCacheRepository
 from app.repositories.workflow_run_repository import WorkflowRunRepository
 from app.services.ai_service import AiService
@@ -70,6 +71,10 @@ class Container(containers.DeclarativeContainer):
     )
     workflow_run_repository = providers.Singleton(
         WorkflowRunRepository,
+        database=mongo_manager.provided.database,
+    )
+    roadmap_repository = providers.Singleton(
+        RoadmapRepository,
         database=mongo_manager.provided.database,
     )
 
@@ -156,6 +161,7 @@ async def bootstrap(container: Container) -> None:
 
     await IntegrationLinkRepository(manager.database).ensure_indexes()
     await AssistantActionRepository(manager.database).ensure_indexes()
+    await RoadmapRepository(manager.database).ensure_indexes()
 
     registry = container.tool_registry()
     registry.register(FreshserviceTool(container.ticket_service(), container.fresh_client()))

@@ -163,39 +163,72 @@ class ClickUpClient:
             return None
 
     async def list_tasks(self) -> list[ClickUpTask]:
-        """Return tasks from the configured ClickUp list.
+        """Return all tasks from the single configured ClickUp list (legacy).
 
         Parameters:
             None.
 
         Returns:
-            List of ClickUp tasks.
+            List of ClickUp tasks from ``settings.clickup_list_id``.
 
         Edge cases:
-            Missing credentials return mock tasks.
+            Kept for the status-sync service; the roadmap uses list_tasks_for
+            per configured list instead.
+        """
+        return await self.list_tasks_for(self._settings.clickup_list_id)
+
+    async def list_tasks_for(self, list_id: str, list_name: str | None = None) -> list[ClickUpTask]:
+        """Return all tasks from a specific ClickUp list, tagged with the list.
+
+        Parameters:
+            list_id: ClickUp list ID to fetch.
+            list_name: Optional display name to tag each task with.
+
+        Returns:
+            List of ClickUp tasks across every page of the given list.
+
+        Edge cases:
+            Missing credentials return mock tasks tagged with the given list.
+            The list endpoint paginates at 100 tasks per page, so every page is
+            fetched until ClickUp reports the last one.
         """
         if not self._settings.has_clickup_credentials:
+            suffix = list_id or "default"
             return [
-                ClickUpTask(id="mock-1", name="Mock pending task", status="open"),
-                ClickUpTask(id="mock-2", name="Mock in-progress task", status="in progress"),
-                ClickUpTask(id="mock-3", name="Mock blocked task", status="blocked"),
+                ClickUpTask(id=f"{suffix}-1", name="Mock pending task", status="pending", list_id=list_id, list_name=list_name),
+                ClickUpTask(id=f"{suffix}-2", name="Mock ready-to-define task", status="ready to define", list_id=list_id, list_name=list_name),
+                ClickUpTask(id=f"{suffix}-3", name="Mock in-progress task", status="in progress", list_id=list_id, list_name=list_name),
+                ClickUpTask(id=f"{suffix}-4", name="Mock done task", status="done", list_id=list_id, list_name=list_name),
             ]
+        tasks: list[ClickUpTask] = []
         try:
             async with httpx.AsyncClient(timeout=20) as client:
-                response = await client.get(
-                    f"https://api.clickup.com/api/v2/list/{self._settings.clickup_list_id}/task",
-                    headers={"Authorization": self._settings.clickup_api_key},
-                )
-                response.raise_for_status()
-                return [
-                    ClickUpTask(
-                        id=str(task.get("id")),
-                        name=str(task.get("name") or "Untitled"),
-                        status=str(task.get("status", {}).get("status") or "unknown").lower(),
-                        url=task.get("url"),
+                page = 0
+                while True:
+                    response = await client.get(
+                        f"https://api.clickup.com/api/v2/list/{list_id}/task",
+                        headers={"Authorization": self._settings.clickup_api_key},
+                        params={"page": page},
                     )
-                    for task in response.json().get("tasks", [])
-                ]
+                    response.raise_for_status()
+                    payload = response.json()
+                    page_tasks = payload.get("tasks", [])
+                    tasks.extend(
+                        ClickUpTask(
+                            id=str(task.get("id")),
+                            name=str(task.get("name") or "Untitled"),
+                            status=str(task.get("status", {}).get("status") or "unknown").lower(),
+                            url=task.get("url"),
+                            description=(task.get("text_content") or task.get("description") or None),
+                            list_id=list_id,
+                            list_name=list_name,
+                        )
+                        for task in page_tasks
+                    )
+                    if payload.get("last_page", True) or not page_tasks:
+                        break
+                    page += 1
+            return tasks
         except httpx.HTTPError as error:
             raise ExternalServiceError(f"ClickUp list tasks failed: {error}") from error
 

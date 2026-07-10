@@ -62,6 +62,29 @@ class ClickUpListConfig(BaseModel):
     custom_fields: list[ClickUpCustomFieldConfig] = []
 
 
+class FreshWorkspaceConfig(BaseModel):
+    """Configure one Freshservice workspace for history harvesting.
+
+    Parameters:
+        workspace_id: Freshservice numeric workspace ID (sent as workspace_id query param).
+        name: Display name shown in the UI.
+        base_url: Optional per-workspace base URL override. Empty → use the global
+            fresh_base_url. Lets a second, separate Freshservice instance be added
+            without a redesign.
+        api_key: Optional per-workspace API key override. Empty → use the global
+            fresh_api_key.
+
+    Edge cases:
+        Empty base_url/api_key fall back to the global Freshservice credentials so
+        the common "two workspaces, same instance" case needs only a workspace_id.
+    """
+
+    workspace_id: str
+    name: str
+    base_url: str = ""
+    api_key: str = ""
+
+
 class AppSettings(BaseModel):
     """Represent editable application integration settings.
 
@@ -71,6 +94,11 @@ class AppSettings(BaseModel):
         fresh_assigned_agent_id: Agent ID for "my tickets" filter.
         fresh_assigned_agent_field: Field used for assignment filter. Defaults to agent_id for Freshservice.
         fresh_workspace_id: Freshservice workspace ID.
+        fresh_workspaces: Workspaces to harvest for the Insights history archive.
+            When empty, the archive falls back to a single workspace synthesized
+            from fresh_workspace_id.
+        fresh_archive_since_months: How many months back the historic backfill reaches.
+        fresh_rate_limit_per_min: Max Freshservice requests per minute during harvesting.
         clickup_api_key: ClickUp API key.
         clickup_team_id: ClickUp team ID.
         clickup_lists: Configured ClickUp lists with routing descriptions and field docs.
@@ -99,6 +127,9 @@ class AppSettings(BaseModel):
     fresh_assigned_agent_id: str = ""
     fresh_assigned_agent_field: str = "agent_id"
     fresh_workspace_id: str = ""
+    fresh_workspaces: list[FreshWorkspaceConfig] = []
+    fresh_archive_since_months: int = 120
+    fresh_rate_limit_per_min: int = 80
     clickup_api_key: str = ""
     clickup_team_id: str = ""
     clickup_lists: list[ClickUpListConfig] = []

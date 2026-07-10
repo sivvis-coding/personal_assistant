@@ -52,6 +52,7 @@ interface Filters {
   priorities: TicketPriority[];
   includeClosed: boolean;
   onlyOverdue: boolean;
+  onlyWithoutTask: boolean;
 }
 
 type SortField = 'id' | 'subject' | 'status' | 'priority' | 'requester';
@@ -261,6 +262,7 @@ export function TicketsPage() {
     priorities: [],
     includeClosed: false,
     onlyOverdue: false,
+    onlyWithoutTask: false,
   });
   const [sort, setSort] = useState<{ field: SortField; direction: SortDirection }>({
     field: 'id',
@@ -314,7 +316,8 @@ export function TicketsPage() {
       const matchesStatus = !filters.statuses.length || filters.statuses.includes(ticket.status);
       const matchesPriority = !filters.priorities.length || filters.priorities.includes(ticket.priority);
       const matchesOverdue = !filters.onlyOverdue || ticket.overdue === true;
-      return matchesSearch && matchesStatus && matchesPriority && matchesOverdue;
+      const matchesNoTask = !filters.onlyWithoutTask || !ticket.clickup_url;
+      return matchesSearch && matchesStatus && matchesPriority && matchesOverdue && matchesNoTask;
     });
 
     result = [...result].sort((a, b) => {
@@ -370,6 +373,10 @@ export function TicketsPage() {
         <FormControlLabel
           control={<Checkbox checked={filters.onlyOverdue} onChange={(e) => setFilters((c) => ({ ...c, onlyOverdue: e.target.checked }))} />}
           label="Solo vencidos"
+        />
+        <FormControlLabel
+          control={<Checkbox checked={filters.onlyWithoutTask} onChange={(e) => setFilters((c) => ({ ...c, onlyWithoutTask: e.target.checked }))} />}
+          label="Sin tarea"
         />
 
         <Tooltip title="Filtros avanzados">
@@ -470,7 +477,18 @@ export function TicketsPage() {
                       ) : null}
                     </TableCell>
                     <TableCell align="right">
-                      <Box className="row-actions" sx={{ display: 'flex', justifyContent: 'flex-end', gap: 0.5, opacity: 0, transition: 'opacity 0.15s' }}>
+                      <Box
+                        className="row-actions"
+                        sx={{
+                          display: 'flex',
+                          justifyContent: 'flex-end',
+                          gap: 0.5,
+                          // Touch devices have no hover, so keep the actions visible
+                          // there; only fade-until-hover where a pointer can hover.
+                          opacity: 1,
+                          '@media (hover: hover)': { opacity: 0, transition: 'opacity 0.15s' },
+                        }}
+                      >
                         <Tooltip title="Responder">
                           <IconButton size="small" color="primary" onClick={(e) => { e.stopPropagation(); setQuickAction({ ticket, type: 'reply' }); }}>
                             <ReplyIcon fontSize="small" />

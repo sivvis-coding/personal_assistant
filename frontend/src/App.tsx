@@ -12,6 +12,8 @@ import { TicketsPage } from './pages/TicketsPage';
 import { TicketDetailPage } from './pages/TicketDetailPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { LinkedTasksPage } from './pages/LinkedTasksPage';
+import { RoadmapPage } from './pages/RoadmapPage';
+import { InsightsPage } from './pages/InsightsPage';
 import { TimeCalendarPage } from './pages/TimeCalendarPage';
 
 /**
@@ -38,6 +40,8 @@ export function App() {
             <Route path="/tickets" element={<TicketsPage />} />
             <Route path="/tickets/:id" element={<TicketDetailPage />} />
             <Route path="/linked-tasks" element={<LinkedTasksPage />} />
+            <Route path="/roadmap" element={<RoadmapPage />} />
+            <Route path="/insights" element={<InsightsPage />} />
             <Route path="/time-calendar" element={<TimeCalendarPage />} />
             <Route path="/settings" element={<SettingsPage />} />
           </Routes>

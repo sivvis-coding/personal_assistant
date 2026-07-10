@@ -21,12 +21,20 @@ from app.repositories.ai_draft_repository import AiDraftRepository
 from app.repositories.app_settings_repository import AppSettingsRepository
 from app.repositories.assistant_action_repository import AssistantActionRepository
 from app.repositories.conversation_repository import ConversationRepository
+from app.repositories.fresh_harvest_state_repository import FreshHarvestStateRepository
+from app.repositories.fresh_knowledge_repository import FreshKnowledgeRepository
+from app.repositories.fresh_ticket_archive_repository import FreshTicketArchiveRepository
 from app.repositories.integration_link_repository import IntegrationLinkRepository
+from app.repositories.operation_lock_repository import OperationLockRepository
+from app.repositories.roadmap_repository import RoadmapRepository
 from app.repositories.ticket_cache_repository import TicketCacheRepository
 from app.repositories.workflow_run_repository import WorkflowRunRepository
 from app.services.ai_service import AiService
 from app.services.clickup_service import ClickUpService
 from app.services.clickup_status_sync_service import ClickUpStatusSyncService
+from app.services.fresh_archive_service import FreshArchiveService
+from app.services.knowledge_service import KnowledgeService
+from app.services.roadmap_service import RoadmapService
 from app.services.settings_service import SettingsService
 from app.services.ticket_service import TicketService
 from app.tools.assistant_action.tool import AssistantActionTool
@@ -142,6 +150,99 @@ def get_clickup_service(clickup_client: ClickUpClient = Depends(get_clickup_clie
         None.
     """
     return ClickUpService(clickup_client)
+
+
+def get_roadmap_repository(mongo_manager: MongoManager = Depends(get_mongo_manager)) -> RoadmapRepository:
+    """Create roadmap repository dependency.
+
+    Parameters:
+        mongo_manager: Mongo manager dependency.
+
+    Returns:
+        Roadmap repository.
+
+    Edge cases:
+        None.
+    """
+    return RoadmapRepository(mongo_manager.database)
+
+
+def get_roadmap_service(
+    clickup_client: ClickUpClient = Depends(get_clickup_client),
+    settings: Settings = Depends(get_settings),
+    roadmap_repository: RoadmapRepository = Depends(get_roadmap_repository),
+    mongo_manager: MongoManager = Depends(get_mongo_manager),
+) -> RoadmapService:
+    """Create roadmap service dependency.
+
+    Parameters:
+        clickup_client: ClickUp client dependency (task source).
+        settings: Application settings (for the OpenAI client).
+        roadmap_repository: Roadmap persistence dependency.
+        mongo_manager: Mongo manager, used to read the configured lists.
+
+    Returns:
+        Roadmap service.
+
+    Edge cases:
+        Missing credentials degrade to mock tasks / mock grouping.
+        With no configured lists it falls back to the single legacy list.
+    """
+    settings_service = SettingsService(AppSettingsRepository(mongo_manager.database))
+    return RoadmapService(clickup_client, OpenAIClient(settings), roadmap_repository, settings_service)
+
+
+def get_fresh_archive_repository(
+    mongo_manager: MongoManager = Depends(get_mongo_manager),
+) -> FreshTicketArchiveRepository:
+    """Create the Freshservice ticket archive repository dependency."""
+    return FreshTicketArchiveRepository(mongo_manager.database)
+
+
+def get_harvest_state_repository(
+    mongo_manager: MongoManager = Depends(get_mongo_manager),
+) -> FreshHarvestStateRepository:
+    """Create the harvest state repository dependency."""
+    return FreshHarvestStateRepository(mongo_manager.database)
+
+
+def get_fresh_knowledge_repository(
+    mongo_manager: MongoManager = Depends(get_mongo_manager),
+) -> FreshKnowledgeRepository:
+    """Create the Freshservice knowledge repository dependency."""
+    return FreshKnowledgeRepository(mongo_manager.database)
+
+
+def get_fresh_archive_service(
+    settings: Settings = Depends(get_settings),
+    mongo_manager: MongoManager = Depends(get_mongo_manager),
+    archive_repository: FreshTicketArchiveRepository = Depends(get_fresh_archive_repository),
+    harvest_state_repository: FreshHarvestStateRepository = Depends(get_harvest_state_repository),
+) -> FreshArchiveService:
+    """Create the Freshservice archive (harvest) service dependency.
+
+    Built per request so DB-merged settings and configured workspaces are
+    always current. SettingsService is built inline (like get_roadmap_service)
+    because get_settings_service is declared later in this module.
+    """
+    settings_service = SettingsService(AppSettingsRepository(mongo_manager.database))
+    return FreshArchiveService(settings, settings_service, archive_repository, harvest_state_repository)
+
+
+def get_knowledge_service(
+    settings: Settings = Depends(get_settings),
+    archive_repository: FreshTicketArchiveRepository = Depends(get_fresh_archive_repository),
+    knowledge_repository: FreshKnowledgeRepository = Depends(get_fresh_knowledge_repository),
+) -> KnowledgeService:
+    """Create the knowledge-generation service dependency."""
+    return KnowledgeService(OpenAIClient(settings), archive_repository, knowledge_repository)
+
+
+def get_operation_lock_repository(
+    mongo_manager: MongoManager = Depends(get_mongo_manager),
+) -> OperationLockRepository:
+    """Create the operation-lock repository dependency (serializes Insights ops)."""
+    return OperationLockRepository(mongo_manager.database)
 
 
 def get_ai_draft_repository(mongo_manager: MongoManager = Depends(get_mongo_manager)) -> AiDraftRepository:

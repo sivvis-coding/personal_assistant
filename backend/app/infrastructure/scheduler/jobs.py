@@ -53,6 +53,11 @@ def configure_scheduler(scheduler: Scheduler, container) -> None:
         "*/15 * * * *",
         _make_clickup_status_sync_job(container),
     )
+    scheduler.add_job(
+        "sync-fresh-archive-03h",
+        "0 3 * * *",
+        _make_fresh_archive_sync_job(container),
+    )
 
 
 def _make_tickets_review_job(container):
@@ -143,6 +148,47 @@ def _make_clickup_status_sync_job(container):
         context = _build_context(container)
         sync_agent = container.clickup_status_sync_agent()
         await sync_agent.handle(ClickUpStatusSyncRequested(), context)
+
+    return run
+
+
+def _make_fresh_archive_sync_job(container):
+    """Return the async callable for the nightly Freshservice archive sync.
+
+    Flow:
+        FreshArchiveService pulls tickets updated since each workspace's cursor
+        and upserts them into the history archive. Called directly (no event
+        bus), building the service from the DB-merged global settings.
+    """
+
+    async def run() -> None:
+        from app.core.config import get_settings
+        from app.core.logging.logger import logger
+        from app.repositories.app_settings_repository import AppSettingsRepository
+        from app.repositories.fresh_harvest_state_repository import FreshHarvestStateRepository
+        from app.repositories.fresh_ticket_archive_repository import FreshTicketArchiveRepository
+        from app.repositories.operation_lock_repository import OperationLockRepository
+        from app.services.fresh_archive_service import FreshArchiveService
+        from app.services.settings_service import SettingsService
+
+        settings = get_settings()
+        database = container.mongo_manager().database
+        lock = OperationLockRepository(database)
+        # Skip if a manual backfill/sync/generate is already running (same lock the
+        # API uses) so the nightly job never overlaps and corrupts harvest state.
+        if not await lock.try_acquire("insights", 7200):
+            logger.info("fresh archive sync skipped — another Insights operation is running")
+            return
+        try:
+            service = FreshArchiveService(
+                settings,
+                SettingsService(AppSettingsRepository(database)),
+                FreshTicketArchiveRepository(database),
+                FreshHarvestStateRepository(database),
+            )
+            await service.sync_incremental()
+        finally:
+            await lock.release("insights")
 
     return run
 
