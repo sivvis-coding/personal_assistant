@@ -1,4 +1,4 @@
-import { apiRequest } from './client';
+import { API_BASE_URL, apiRequest } from './client';
 import type {
   ArchivedTicketsResponse,
   HarvestStatus,
@@ -77,4 +77,35 @@ export function generateKnowledge(statuses: string[] = ['resolved', 'closed']): 
  */
 export function getKnowledge(): Promise<KnowledgeResponse> {
   return apiRequest<KnowledgeResponse>('/insights/knowledge');
+}
+
+/**
+ * Purpose: Download the plain-text JSONL export for RAG ingestion.
+ * Parameters: include ("themes" by default — symptom/resolution knowledge only;
+ *   pass e.g. "themes,bottlenecks,automation,metrics,tickets" for more), optional workspace_id filter.
+ * Return value: Promise that resolves once the browser download has been triggered.
+ * Edge cases: Uses fetch + blob directly (not apiRequest) since the response is not JSON.
+ */
+export async function downloadInsightsExport(params: { include?: string; workspace_id?: string } = {}): Promise<void> {
+  const localKey = window.localStorage.getItem('LOCAL_APP_API_KEY') ?? '';
+  const query = new URLSearchParams({ include: params.include ?? 'themes' });
+  if (params.workspace_id) query.set('workspace_id', params.workspace_id);
+
+  const response = await fetch(`${API_BASE_URL}/insights/export?${query.toString()}`, {
+    headers: localKey ? { 'X-Local-App-Key': localKey } : {},
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(String(payload.detail ?? response.statusText));
+  }
+
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = 'insights_export.jsonl';
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
 }

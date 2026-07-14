@@ -1,3 +1,4 @@
+from collections.abc import AsyncIterator
 from typing import Any
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -110,6 +111,19 @@ class FreshTicketArchiveRepository(BaseRepository):
     async def count_for_workspace(self, workspace_id: str) -> int:
         """Return the number of archived tickets for a workspace."""
         return await self.collection.count_documents({"workspace_id": workspace_id})
+
+    async def stream_all(self, workspace_id: str | None = None) -> AsyncIterator[dict[str, Any]]:
+        """Yield every archived ticket as a serialized dict, lazily.
+
+        Unlike list_paginated/iter_for_scope, this never materializes the full
+        archive in memory — needed for a full-export walk over a potentially
+        large collection.
+        """
+        query = {"workspace_id": workspace_id} if workspace_id else {}
+        async for document in self.collection.find(query):
+            serialized = self.serialize(document)
+            if serialized is not None:
+                yield serialized
 
 
 async def _serialized(cursor, repo: BaseRepository):

@@ -27,6 +27,7 @@ import {
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
 import SummarizeIcon from '@mui/icons-material/Summarize';
+import DownloadIcon from '@mui/icons-material/Download';
 import AddIcon from '@mui/icons-material/Add';
 import MoreVertIcon from '@mui/icons-material/MoreVert';
 import CloudDoneIcon from '@mui/icons-material/CloudDone';
@@ -83,6 +84,46 @@ function withCounts(sections: RoadmapListSection[]): RoadmapListSection[] {
     ...s,
     groups: s.groups.map((g) => ({ ...g, count: g.tasks.length })),
   }));
+}
+
+function mdEscape(text: string): string {
+  return text.replace(/\r?\n+/g, ' ').trim();
+}
+
+function buildMarkdown(sections: RoadmapListSection[], summaries: Record<string, string>): string {
+  const today = new Date().toISOString().slice(0, 10);
+  const lines: string[] = ['# Roadmap', '', `_Generado el ${today}_`, ''];
+
+  sections.forEach((section) => {
+    lines.push(`## ${mdEscape(section.list_name)} (${section.total_tasks} tareas)`, '');
+    const listSummary = summaries[section.list_id];
+    if (listSummary) {
+      lines.push(mdEscape(listSummary), '');
+    }
+
+    section.groups
+      .filter((group) => group.tasks.length > 0)
+      .forEach((group) => {
+        const summary = group.summary ? mdEscape(group.summary) : 'Sin resumen.';
+        lines.push(`- **${mdEscape(group.title)}** (${group.tasks.length} tareas): ${summary}`);
+      });
+    lines.push('');
+  });
+
+  return lines.join('\n');
+}
+
+function downloadMarkdown(sections: RoadmapListSection[], summaries: Record<string, string>) {
+  const markdown = buildMarkdown(sections, summaries);
+  const blob = new Blob([markdown], { type: 'text/markdown' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = `roadmap-${new Date().toISOString().slice(0, 10)}.md`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  URL.revokeObjectURL(url);
 }
 
 function TaskCardBody({ task }: { task: RoadmapTask }) {
@@ -516,6 +557,15 @@ export function RoadmapPage() {
               disabled={isSummarizing}
             >
               {isSummarizing ? 'Resumiendo…' : 'Generar resúmenes'}
+            </Button>
+          ) : null}
+          {hasContent ? (
+            <Button
+              variant="text"
+              startIcon={<DownloadIcon />}
+              onClick={() => downloadMarkdown(sections, summaries)}
+            >
+              Exportar Markdown
             </Button>
           ) : null}
           <Button

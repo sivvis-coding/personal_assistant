@@ -3,10 +3,12 @@
 import logging
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 
 from app.api.deps import (
     get_fresh_archive_repository,
     get_fresh_archive_service,
+    get_insights_export_service,
     get_knowledge_service,
     get_operation_lock_repository,
     require_auth,
@@ -24,6 +26,7 @@ from app.schemas.insights import (
     WorkspacesResponse,
 )
 from app.services.fresh_archive_service import FreshArchiveService
+from app.services.insights_export_service import InsightsExportService
 from app.services.knowledge_service import KnowledgeService
 
 logger = logging.getLogger(__name__)
@@ -170,3 +173,32 @@ async def get_knowledge(
         return await service.get_persisted()
     except ExternalServiceError as error:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error)) from error
+
+
+@router.get("/export")
+async def export_insights(
+    include: str = Query("themes"),
+    workspace_id: str | None = Query(None),
+    export_service: InsightsExportService = Depends(get_insights_export_service),
+) -> StreamingResponse:
+    """Stream the knowledge base + ticket archive as newline-delimited JSON.
+
+    One line = one ExportRecord (plain-text content + metadata), meant for
+    ingestion into an external RAG search index (e.g. Azure AI Search).
+
+    Parameters:
+        include: Comma-separated subset of "themes"/"bottlenecks"/"automation"/
+            "metrics"/"tickets". Defaults to "themes" only — themes carry the
+            symptom → resolution knowledge a support RAG needs; the rest are
+            opt-in for other use cases (process improvement, ticket lookup).
+        workspace_id: Optional filter to a single department/workspace.
+
+    Edge cases:
+        Read-only — does not take the Insights operation lock.
+    """
+    included = {part.strip() for part in include.split(",") if part.strip()}
+    return StreamingResponse(
+        export_service.stream(included, workspace_id),
+        media_type="application/x-ndjson",
+        headers={"Content-Disposition": 'attachment; filename="insights_export.jsonl"'},
+    )

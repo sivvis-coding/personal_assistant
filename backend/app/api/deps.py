@@ -33,6 +33,7 @@ from app.services.ai_service import AiService
 from app.services.clickup_service import ClickUpService
 from app.services.clickup_status_sync_service import ClickUpStatusSyncService
 from app.services.fresh_archive_service import FreshArchiveService
+from app.services.insights_export_service import InsightsExportService
 from app.services.knowledge_service import KnowledgeService
 from app.services.roadmap_service import RoadmapService
 from app.services.settings_service import SettingsService
@@ -236,6 +237,14 @@ def get_knowledge_service(
 ) -> KnowledgeService:
     """Create the knowledge-generation service dependency."""
     return KnowledgeService(OpenAIClient(settings), archive_repository, knowledge_repository)
+
+
+def get_insights_export_service(
+    knowledge_service: KnowledgeService = Depends(get_knowledge_service),
+    archive_repository: FreshTicketArchiveRepository = Depends(get_fresh_archive_repository),
+) -> InsightsExportService:
+    """Create the Insights export (plain-text/RAG) service dependency."""
+    return InsightsExportService(knowledge_service, archive_repository)
 
 
 def get_operation_lock_repository(

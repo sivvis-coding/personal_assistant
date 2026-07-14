@@ -29,7 +29,9 @@ import SyncIcon from '@mui/icons-material/Sync';
 import HistoryIcon from '@mui/icons-material/History';
 import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
 import TravelExploreIcon from '@mui/icons-material/TravelExplore';
+import DownloadIcon from '@mui/icons-material/Download';
 import {
+  downloadInsightsExport,
   generateKnowledge,
   getArchivedTickets,
   getInsightsStatus,
@@ -466,13 +468,38 @@ function CenteredSpinner() {
 
 export function InsightsPage() {
   const [tab, setTab] = useState(0);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  async function handleExport() {
+    setExporting(true);
+    setExportError(null);
+    try {
+      await downloadInsightsExport();
+    } catch (e) {
+      setExportError((e as Error).message);
+    } finally {
+      setExporting(false);
+    }
+  }
 
   return (
     <Box>
-      <Typography variant="h4" gutterBottom>Insights</Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Conocimiento por departamento del histórico de Freshservice: problemas, cuellos de botella y automatización.
-      </Typography>
+      <Stack direction="row" alignItems="flex-start" justifyContent="space-between" spacing={2}>
+        <Box>
+          <Typography variant="h4" gutterBottom>Insights</Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            Conocimiento por departamento del histórico de Freshservice: problemas, cuellos de botella y automatización.
+          </Typography>
+        </Box>
+        <Button variant="outlined" startIcon={<DownloadIcon />} onClick={() => void handleExport()} disabled={exporting}>
+          {exporting ? 'Exportando…' : 'Exportar (RAG)'}
+        </Button>
+      </Stack>
+
+      {exportError ? (
+        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setExportError(null)}>{exportError}</Alert>
+      ) : null}
 
       <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ mb: 2 }}>
         <Tab label="Conocimiento" />

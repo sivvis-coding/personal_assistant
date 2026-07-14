@@ -303,3 +303,37 @@ class GenerateKnowledgeRequest(BaseModel):
     """
 
     statuses: list[str] | None = None
+
+
+# --- Plain-text export (RAG ingestion) ----------------------------------------
+
+
+class ExportRecord(BaseModel):
+    """One indexable unit for external RAG ingestion (e.g. Azure AI Search).
+
+    Parameters:
+        id: Stable-ish key. Ticket ids are stable across exports; theme/
+            bottleneck/automation/metric ids are derived from titles that can
+            shift when the knowledge base is regenerated.
+        content: Plain-text body meant to be embedded/searched as-is.
+        source_type: One of "theme", "bottleneck", "automation", "metric", "ticket".
+
+    Edge cases:
+        Fields irrelevant to a given source_type are left at their default and
+        dropped when serialized with exclude_defaults=True.
+    """
+
+    id: str
+    content: str
+    source_type: str
+    department: str = ""
+    workspace_id: str = ""
+    title: str = ""
+    ticket_ids: list[str] = []
+    category: str = ""
+    status: str = ""
+    severity: str = ""
+    frequency: int | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    generated_at: datetime | None = None
